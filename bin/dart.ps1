@@ -88,7 +88,11 @@ function ConvertTo-WslPath {
         if ($rest) { return "$script:DriveMount/$drive/$rest" }
         else       { return "$script:DriveMount/$drive/" }
     }
-    # Relative path or anything else: unchanged
+    # Relative path or anything else: convert backslashes to forward slashes
+    # (WSL convention; e.g. lib\main.dart -> lib/main.dart).
+    if ($Path -match '\\') {
+        return ($Path -replace '\\', '/')
+    }
     return $Path
 }
 
