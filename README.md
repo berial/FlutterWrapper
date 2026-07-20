@@ -95,10 +95,30 @@ powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
 4. 验证 `flutter --version` 能跑
 5. 推导 dart 可执行文件路径
 6. 检测 UNC 前缀（`\\wsl.localhost\<distro>`）和盘符挂载点（`/mnt`）
-7. 生成 `config/wrapper.yaml`
-8. 创建 `bin/cache/dart-sdk` Junction（指向 Windows 侧的 dart-sdk，供 Dart 插件分析）
-9. 写 `bin/cache/flutter.version.json`
-10. 跑 smoke test：`flutter --version`
+7. **映射网络驱动器**（W: → `\\wsl.localhost\<distro>`，绕过 CMD 不支持 UNC cwd 的限制，见下方说明）
+8. 生成 `config/wrapper.yaml`（含 `mappedDrive: W`）
+9. 创建 `bin/cache/dart-sdk` Junction（指向 Windows 侧的 dart-sdk，供 Dart 插件分析）
+10. 写 `bin/cache/flutter.version.json`
+11. 跑 smoke test：`flutter --version`
+
+### ⚠️ 必须用映射盘符打开 WSL 项目
+
+**Windows CMD.EXE 不支持 UNC 路径作为当前目录**。如果 Android Studio 用 UNC 路径（如 `\\wsl.localhost\Ubuntu-24.04\home\user\project`）打开项目，CMD 会静默回退到 `C:\Windows`，导致 flutter 在错误目录下运行，报错 `No pubspec.yaml file found`。
+
+`install.ps1` 会自动映射 `W:` → `\\wsl.localhost\<distro>`。**在 Android Studio 中打开 WSL 项目时，必须用映射盘符路径**：
+
+```
+✅ 正确：W:\home\berial\workspace\my_project
+❌ 错误：\\wsl.localhost\Ubuntu-24.04\home\berial\workspace\my_project
+```
+
+映射是非持久化的（重启后失效）。如需持久化，手动执行：
+
+```powershell
+net use W: \\wsl.localhost\Ubuntu-24.04 /persistent:yes
+```
+
+或重启后重跑 `install.ps1`。
 
 ### 在 Android Studio 中配置
 
@@ -108,7 +128,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
    - Flutter SDK path: `D:\Android\FlutterWrapper`
 2. **Settings → Languages & Frameworks → Dart**
    - Dart SDK path: `D:\Android\FlutterWrapper\bin\cache\dart-sdk`
-3. 重启 Android Studio
+3. **打开项目时用映射盘符路径**（如 `W:\home\user\project`，不要用 UNC）
+4. 重启 Android Studio
 
 ## 使用
 
@@ -146,6 +167,7 @@ dart:
 workspace:
   uncPrefix: \\wsl.localhost\Ubuntu-24.04
   driveMount: /mnt
+  mappedDrive: W  # net use W: -> \\wsl.localhost\<distro> (绕过 CMD UNC cwd 限制)
 ```
 
 修改配置后无需改任何脚本。如更换 WSL 发行版或 Flutter 路径变化，重跑 `install.ps1` 即可。
@@ -262,6 +284,18 @@ AS stdout ← [Console]::Out    ─┘
 - 检查 `config/wrapper.yaml` 的 `wsl.distro` 和 `flutter.executable` 是否正确
 - 在 WSL 内手动跑 `<flutter-executable> --version` 验证
 - 查看 `logs/wrapper.log`
+
+### `No pubspec.yaml file found`（从 Android Studio 启动时）
+
+**根因**：Android Studio 用 UNC 路径（`\\wsl.localhost\...`）作为 cwd 调用 `flutter.bat`，Windows CMD.EXE 不支持 UNC cwd，静默回退到 `C:\Windows`，导致 flutter 在错误目录运行。
+
+**解决**：
+1. 确认 `install.ps1` 已运行（会自动 `net use W: \\wsl.localhost\<distro>`）
+2. 在 Android Studio 里**关闭当前项目**
+3. 用映射盘符路径重新打开：`File → Open → W:\home\<user>\<project>`
+4. **不要用** `\\wsl.localhost\...` 路径打开
+
+验证方法：在 cmd 里执行 `net use W:`，应显示 `\\wsl.localhost\Ubuntu-24.04`。
 
 ### daemon 模式无响应
 

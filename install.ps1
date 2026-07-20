@@ -192,6 +192,59 @@ $driveMount = '/mnt'
 Write-OK "Drive mount: $driveMount (WSL default)"
 
 # ============================================================
+# Step 5b: Map \\wsl.localhost\<distro> to a drive letter
+# ============================================================
+# CMD.EXE doesn't support UNC paths as current directory. When Android Studio
+# opens a project via UNC (\\wsl.localhost\...), CMD silently falls back to
+# C:\Windows, causing flutter to run in the wrong cwd. Map a drive letter
+# (W:) so users can open projects as W:\home\user\project and CMD accepts it.
+$mappedDrive = $null
+$candidates = @('W:', 'V:', 'U:', 'T:', 'S:', 'R:')
+foreach ($letter in $candidates) {
+    $existing = $null
+    try { $existing = net use $letter 2>$null } catch {}
+    if (-not $existing) {
+        # Drive letter is free
+        if (-not (Test-Path "$letter\")) {
+            $mappedDrive = $letter
+            break
+        }
+    } elseif ($existing -match [regex]::Escape($uncPrefix)) {
+        # Already mapped to our UNC, reuse
+        $mappedDrive = $letter
+        Write-OK "Drive $letter already mapped to $uncPrefix"
+        break
+    }
+}
+
+if ($mappedDrive) {
+    # Verify drive is not already mapped
+    $alreadyMapped = $false
+    try {
+        $check = net use $mappedDrive 2>$null
+        if ($check -match [regex]::Escape($uncPrefix)) { $alreadyMapped = $true }
+    } catch {}
+
+    if (-not $alreadyMapped) {
+        Write-Host "    Mapping $mappedDrive -> $uncPrefix"
+        $result = net use $mappedDrive $uncPrefix 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-OK "Mapped $mappedDrive -> $uncPrefix"
+        } else {
+            Write-Warn "Failed to map $mappedDrive (may need admin): $result"
+            $mappedDrive = $null
+        }
+    }
+} else {
+    Write-Warn "No free drive letter found for UNC mapping"
+}
+
+# Test mapped drive is accessible
+if ($mappedDrive -and (Test-Path "$mappedDrive\")) {
+    Write-OK "$mappedDrive accessible"
+}
+
+# ============================================================
 # Step 6: Write config/wrapper.yaml
 # ============================================================
 Write-Step "Writing config/wrapper.yaml"
@@ -238,6 +291,19 @@ workspace:
   # e.g. D:\demo -> /mnt/d/demo
   driveMount: $driveMount
 "@
+
+# Append mappedDrive if configured
+if ($mappedDrive) {
+    $configContent += @"
+
+  # Drive letter mapped to UNC prefix (via net use).
+  # Use this drive letter to open WSL projects in Android Studio:
+  #   $mappedDrive\home\user\project
+  # CMD.EXE does not support UNC as cwd, so this mapping is required
+  # for AS-launched flutter.bat to find the project directory.
+  mappedDrive: $($mappedDrive.TrimEnd(':'))
+"@
+}
 
 Set-Content -Path $configPath -Value $configContent -Encoding UTF8
 Write-OK "Wrote $configPath"
@@ -359,5 +425,21 @@ Write-Host "    2. Settings > Languages & Frameworks > Flutter > Flutter SDK Pat
 Write-Host "       -> $rootDir"
 Write-Host "    3. Settings > Languages & Frameworks > Dart > Dart SDK Path"
 Write-Host "       -> $dartSdkLink"
-Write-Host "    4. Restart Android Studio"
+Write-Host "    4. IMPORTANT: Open WSL projects via the mapped drive letter:"
+if ($mappedDrive) {
+    Write-Host "       Use:  $mappedDrive\home\<user>\<project>" -ForegroundColor Yellow
+    Write-Host "       Not:  \\wsl.localhost\$distro\home\<user>\<project>" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "       CMD.EXE doesn't support UNC paths as cwd. If you open a"
+    Write-Host "       project via \\\\wsl.localhost\..., flutter.bat will run in"
+    Write-Host "       C:\Windows instead of your project dir and fail with"
+    Write-Host "       'No pubspec.yaml file found'."
+} else {
+    Write-Host "       (No drive letter mapped - UNC projects may fail to run)"
+}
+Write-Host "    5. Restart Android Studio"
+Write-Host ""
+Write-Host "  Note: Drive mapping is per-user and not persistent across reboots."
+Write-Host "        Re-run install.ps1 after reboot, or run:"
+Write-Host "          net use $mappedDrive $uncPrefix /persistent:yes"
 Write-Host ""

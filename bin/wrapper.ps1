@@ -52,6 +52,11 @@ function Read-WrapperConfig {
 function ConvertTo-WslPath {
     param([string]$Path)
     if (-not $Path) { return $Path }
+    if ($script:MappedDrive -and $Path -match "^$($script:MappedDrive):[\\/](.*)$") {
+        $rest = $Matches[1] -replace '\\', '/'
+        if ($rest) { return "/$rest" } else { return "/" }
+    }
+    if ($script:MappedDrive -and $Path -match "^$($script:MappedDrive):$") { return "/" }
     if ($Path -match '^\\\\[wW][sS][lL]\.(?:[lL][oO][cC][aA][lL][hH][oO][sS][tT])\\([^\\]+)\\(.*)$') {
         $rest = $Matches[2] -replace '\\', '/'
         if ($rest) { return "/$rest" } else { return "/" }
@@ -195,6 +200,10 @@ $flutterExe = $config.flutter.executable
 $script:DriveMount = $config.workspace.driveMount
 if (-not $script:DriveMount) { $script:DriveMount = '/mnt' }
 $script:UncPrefix = $config.workspace.uncPrefix
+$script:MappedDrive = $config.workspace.mappedDrive
+if ($script:MappedDrive -and $script:MappedDrive -match '^([A-Za-z]):') {
+    $script:MappedDrive = $Matches[1].ToUpper()
+}
 $tcpPort = if ($config.daemon.tcpPort) { [int]$config.daemon.tcpPort } else { 9876 }
 
 $winCwd = (Get-Location).Path
@@ -267,6 +276,11 @@ $helperFunctions = @'
 function ConvertTo-WslPath {
     param([string]$Path)
     if (-not $Path) { return $Path }
+    if ($MappedDrive -and $Path -match "^$($MappedDrive):[\\/](.*)$") {
+        $rest = $Matches[1] -replace '\\', '/'
+        if ($rest) { return "/$rest" } else { return "/" }
+    }
+    if ($MappedDrive -and $Path -match "^$($MappedDrive):$") { return "/" }
     if ($Path -match '^\\\\[wW][sS][lL]\.(?:[lL][oO][cC][aA][lL][hH][oO][sS][tT])\\([^\\]+)\\(.*)$') {
         $rest = $Matches[2] -replace '\\', '/'
         if ($rest) { return "/$rest" } else { return "/" }
@@ -399,8 +413,8 @@ while ($true) {
 Write-Log "out: pump exit"
 '@
 
-$inParamBlock  = 'param($tcpWriter, $logPath, $DriveMount, $UncPrefix)'
-$outParamBlock = 'param($tcpReader, $logPath, $DriveMount, $UncPrefix)'
+$inParamBlock  = 'param($tcpWriter, $logPath, $DriveMount, $UncPrefix, $MappedDrive)'
+$outParamBlock = 'param($tcpReader, $logPath, $DriveMount, $UncPrefix, $MappedDrive)'
 $inScript  = $inParamBlock + "`n" + $helperFunctions + "`n" + $inPumpBody
 $outScript = $outParamBlock + "`n" + $helperFunctions + "`n" + $outPumpBody
 
@@ -409,11 +423,12 @@ $rs1 = [runspacefactory]::CreateRunspace()
 $rs1.Open()
 $rs1.SessionStateProxy.SetVariable('DriveMount', $script:DriveMount)
 $rs1.SessionStateProxy.SetVariable('UncPrefix', $script:UncPrefix)
+$rs1.SessionStateProxy.SetVariable('MappedDrive', $script:MappedDrive)
 $rs1.SessionStateProxy.SetVariable('LogPath', $logPath)
 $ps1 = [powershell]::Create()
 $ps1.Runspace = $rs1
 $null = $ps1.AddScript($inScript)
-$null = $ps1.AddParameters(@{tcpWriter=$tcpWriter; logPath=$logPath; DriveMount=$script:DriveMount; UncPrefix=$script:UncPrefix})
+$null = $ps1.AddParameters(@{tcpWriter=$tcpWriter; logPath=$logPath; DriveMount=$script:DriveMount; UncPrefix=$script:UncPrefix; MappedDrive=$script:MappedDrive})
 $handle1 = $ps1.BeginInvoke()
 
 # Runspace 2: TCP -> stdout
@@ -421,11 +436,12 @@ $rs2 = [runspacefactory]::CreateRunspace()
 $rs2.Open()
 $rs2.SessionStateProxy.SetVariable('DriveMount', $script:DriveMount)
 $rs2.SessionStateProxy.SetVariable('UncPrefix', $script:UncPrefix)
+$rs2.SessionStateProxy.SetVariable('MappedDrive', $script:MappedDrive)
 $rs2.SessionStateProxy.SetVariable('LogPath', $logPath)
 $ps2 = [powershell]::Create()
 $ps2.Runspace = $rs2
 $null = $ps2.AddScript($outScript)
-$null = $ps2.AddParameters(@{tcpReader=$tcpReader; logPath=$logPath; DriveMount=$script:DriveMount; UncPrefix=$script:UncPrefix})
+$null = $ps2.AddParameters(@{tcpReader=$tcpReader; logPath=$logPath; DriveMount=$script:DriveMount; UncPrefix=$script:UncPrefix; MappedDrive=$script:MappedDrive})
 $handle2 = $ps2.BeginInvoke()
 
 # Wait for wsl.exe to exit OR TCP pump to exit (daemon shutdown closes TCP

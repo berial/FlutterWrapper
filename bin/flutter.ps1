@@ -61,6 +61,18 @@ function ConvertTo-WslPath {
     param([string]$Path)
     if (-not $Path) { return $Path }
 
+    # Mapped drive (e.g. W: -> \\wsl.localhost\<distro>): W:\home\user -> /home/user
+    # This handles the case where AS opens a project via a drive letter mapped
+    # to a WSL UNC path (net use W: \\wsl.localhost\<distro>). CMD doesn't support
+    # UNC as cwd, so users must map a drive letter first.
+    if ($script:MappedDrive -and $Path -match "^$($script:MappedDrive):[\\/](.*)$") {
+        $rest = $Matches[1] -replace '\\', '/'
+        if ($rest) { return "/$rest" } else { return "/" }
+    }
+    if ($script:MappedDrive -and $Path -match "^$($script:MappedDrive):$") {
+        return "/"
+    }
+
     # UNC \\wsl.localhost\<distro>\<rest>
     if ($Path -match '^\\\\[wW][sS][lL]\.(?:[lL][oO][cC][aA][lL][hH][oO][sS][tT])\\([^\\]+)\\(.*)$') {
         $rest = $Matches[2] -replace '\\', '/'
@@ -133,6 +145,10 @@ $distro     = $config.wsl.distro
 $flutterExe = $config.flutter.executable
 $script:DriveMount = $config.workspace.driveMount
 if (-not $script:DriveMount) { $script:DriveMount = '/mnt' }
+$script:MappedDrive = $config.workspace.mappedDrive
+if ($script:MappedDrive -and $script:MappedDrive -match '^([A-Za-z]):') {
+    $script:MappedDrive = $Matches[1].ToUpper()
+}
 
 if (-not $distro -or -not $flutterExe) {
     Write-Error "FlutterWrapper: config missing 'wsl.distro' or 'flutter.executable'"
