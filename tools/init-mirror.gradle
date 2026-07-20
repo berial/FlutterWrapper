@@ -1,0 +1,53 @@
+// init.d/mirror.gradle
+// Redirect Google Maven / Maven Central / Gradle Plugin Portal to Alibaba
+// Cloud mirrors for users in mainland China.
+//
+// Why: WSL proxy + Java TLS + dl.google.com causes handshake failures
+// ("Remote host terminated the handshake"). Alibaba mirrors are fast in
+// China without proxy. Applied to ALL gradle builds in this WSL user,
+// without modifying any project file.
+//
+// Uses beforeSettings hook so pluginManagement repositories are rewritten
+// BEFORE plugin resolution starts (settingsEvaluated is too late in Gradle 9.x).
+
+import org.gradle.api.artifacts.repositories.MavenArtifactRepository
+
+// Closure that rewrites repository URLs in-place. Pass the RepositoryHandler.
+def rewriteRepos = { handler ->
+    handler.all { repo ->
+        if (repo instanceof MavenArtifactRepository) {
+            def url = repo.url.toString()
+            if (url.contains('dl.google.com') || url.contains('maven.google.com')) {
+                repo.url = 'https://maven.aliyun.com/repository/google'
+            } else if (url.contains('repo.maven.apache.org') || url.contains('repo1.maven.org')) {
+                repo.url = 'https://maven.aliyun.com/repository/public'
+            } else if (url.contains('plugins.gradle.org')) {
+                repo.url = 'https://maven.aliyun.com/repository/gradle-plugin'
+            }
+        }
+    }
+}
+
+beforeSettings { settings ->
+    settings.pluginManagement {
+        repositories {
+            rewriteRepos(delegate)
+        }
+    }
+    settings.dependencyResolutionManagement {
+        repositories {
+            rewriteRepos(delegate)
+        }
+    }
+}
+
+allprojects {
+    buildscript {
+        repositories {
+            rewriteRepos(delegate)
+        }
+    }
+    repositories {
+        rewriteRepos(delegate)
+    }
+}

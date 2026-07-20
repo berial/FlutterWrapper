@@ -166,6 +166,93 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # ============================================================
+# Step 4b: Detect Java (JDK) path inside WSL
+# ============================================================
+# Gradle needs JAVA_HOME. wsl.exe drops Windows env vars, so JAVA_HOME must
+# be set explicitly via WSLENV. Detect from vfox, then JAVA_HOME, then PATH.
+Write-Step "Detecting Java (JDK) in WSL ($distro)"
+$javaHome = $null
+
+# Method 1: vfox symlink (~/.vfox/sdks/java -> current version)
+$vfoxJava = & wsl.exe -d $distro -- bash -lc 'readlink -f ~/.vfox/sdks/java 2>/dev/null' 2>$null
+$vfoxJava = $vfoxJava.Trim()
+if ($vfoxJava -and $vfoxJava.StartsWith('/')) {
+    $javaCheck = & wsl.exe -d $distro -- test -f "$vfoxJava/bin/java" 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        $javaHome = '/home/' + (& wsl.exe -d $distro -- bash -lc 'whoami' 2>$null).Trim() + '/.vfox/sdks/java'
+        Write-OK "Java found via vfox: $javaHome"
+    }
+}
+
+# Method 2: JAVA_HOME already set in WSL login shell
+if (-not $javaHome) {
+    $wslJavaHome = & wsl.exe -d $distro -- bash -lc 'echo $JAVA_HOME' 2>$null
+    $wslJavaHome = $wslJavaHome.Trim()
+    if ($wslJavaHome -and $wslJavaHome.StartsWith('/')) {
+        $javaCheck = & wsl.exe -d $distro -- test -f "$wslJavaHome/bin/java" 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            $javaHome = $wslJavaHome
+            Write-OK "Java found via JAVA_HOME: $javaHome"
+        }
+    }
+}
+
+# Method 3: java in PATH
+if (-not $javaHome) {
+    $wslJavaPath = & wsl.exe -d $distro -- bash -lc 'readlink -f $(command -v java 2>/dev/null) 2>/dev/null' 2>$null
+    $wslJavaPath = $wslJavaPath.Trim()
+    if ($wslJavaPath -and $wslJavaPath -match '^(.+)/bin/java$') {
+        $javaHome = $Matches[1]
+        Write-OK "Java found in PATH: $javaHome"
+    }
+}
+
+if (-not $javaHome) {
+    Write-Warn "Java not found in WSL. Set java.home in config/wrapper.yaml manually."
+}
+
+# ============================================================
+# Step 4c: Detect Chrome/Edge executable for flutter web
+# ============================================================
+# flutter web device discovery needs CHROME_EXECUTABLE. WSL has no Linux
+# Chrome by default; reuse Windows Edge/Chrome via /mnt/c/... interop.
+Write-Step "Detecting Chrome/Edge for flutter web"
+$chromeExe = $null
+
+# Search common Windows Edge/Chrome locations (visible from WSL as /mnt/c/...)
+$winBrowserCandidates = @(
+    'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
+    'C:\Program Files\Microsoft\Edge\Application\msedge.exe',
+    'C:\Program Files\Google\Chrome\Application\chrome.exe',
+    'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe'
+)
+foreach ($p in $winBrowserCandidates) {
+    if (Test-Path $p) {
+        # Convert to WSL path
+        $drive = $p.Substring(0,1).ToLower()
+        $rest = $p.Substring(2) -replace '\\', '/'
+        $chromeExe = "/mnt/$drive$rest"
+        Write-OK "Browser found: $chromeExe"
+        break
+    }
+}
+
+if (-not $chromeExe) {
+    # Try CHROME_EXECUTABLE env var
+    $envChrome = $env:CHROME_EXECUTABLE
+    if ($envChrome -and (Test-Path $envChrome)) {
+        $drive = $envChrome.Substring(0,1).ToLower()
+        $rest = $envChrome.Substring(2) -replace '\\', '/'
+        $chromeExe = "/mnt/$drive$rest"
+        Write-OK "Browser via CHROME_EXECUTABLE: $chromeExe"
+    }
+}
+
+if (-not $chromeExe) {
+    Write-Warn "No Chrome/Edge found. Set chrome.executable in config/wrapper.yaml manually."
+}
+
+# ============================================================
 # Step 5: Detect UNC prefix and drive mount
 # ============================================================
 Write-Step "Detecting WSL UNC prefix and drive mount"
@@ -282,6 +369,18 @@ dart:
   # Absolute path to dart executable inside WSL (same SDK as flutter).
   executable: $dartExe
 
+java:
+  # Absolute path to JDK inside WSL (for flutter doctor / gradle).
+  # wsl.exe does not forward Windows env vars, so JAVA_HOME must be set
+  # explicitly via WSLENV. Point this to your JDK install (vfox symlink OK).
+  home: $javaHome
+
+chrome:
+  # Path to Chrome/Edge executable for `flutter run -d web-server` / `chrome`.
+  # WSL has no Linux Chrome installed; point this to Windows Edge/Chrome
+  # (accessible via /mnt/c/...). Forwarded via WSLENV as CHROME_EXECUTABLE.
+  executable: $chromeExe
+
 workspace:
   # UNC prefix for WSL->Windows path translation.
   # e.g. /home/user/demo -> \\wsl.localhost\$distro\home\user\demo
@@ -380,6 +479,95 @@ if (-not (Test-Path $versionJson)) {
 }
 
 # ============================================================
+# Step 7b: Create Linux wrappers for Windows SDK tools (adb, aapt, aapt2, ...)
+# ============================================================
+# Flutter on Linux looks for tools without .exe extension (e.g. adb, aapt).
+# Windows SDK only ships .exe versions. We create shell wrappers that delegate
+# to the .exe, which runs via WSL interop and shares Windows adb server state.
+Write-Step "Creating Linux wrappers for Windows SDK tools"
+
+$setupScript = Join-Path $rootDir 'tools\setup-build-tools-wrappers.sh'
+if (-not (Test-Path $setupScript)) {
+    Write-Warn "setup-build-tools-wrappers.sh not found (skipping)"
+} else {
+    # Detect Windows Android SDK path (must match what flutter.ps1 resolves)
+    $winAndroidSdkPath = $null
+    if (Test-Path 'D:\Android\Sdk') { $winAndroidSdkPath = 'D:\Android\Sdk' }
+    if (-not $winAndroidSdkPath) { $winAndroidSdkPath = $env:ANDROID_HOME }
+    if (-not $winAndroidSdkPath) { $winAndroidSdkPath = $env:ANDROID_SDK_ROOT }
+
+    if ($winAndroidSdkPath -and (Test-Path $winAndroidSdkPath)) {
+        # Convert to WSL path
+        $drive = $winAndroidSdkPath.Substring(0,1).ToLower()
+        $rest = $winAndroidSdkPath.Substring(2) -replace '\\', '/'
+        $wslSdkPath = "/mnt/$drive$rest"
+
+        # Create adb wrapper in platform-tools
+        $adbWrapper = "$winAndroidSdkPath\platform-tools\adb"
+        $adbExe = "$winAndroidSdkPath\platform-tools\adb.exe"
+        if ((Test-Path $adbExe) -and -not (Test-Path $adbWrapper)) {
+            $adbContent = @"
+#!/bin/bash
+# FlutterWrapper: Linux-side adb wrapper that delegates to Windows adb.exe.
+# adb.exe runs via WSL interop and connects to the Windows adb server
+# (127.0.0.1:5037), sharing the device list with Android Studio.
+exec "$wslSdkPath/platform-tools/adb.exe" "`$@"
+"@
+            Set-Content -Path $adbWrapper -Value $adbContent -Encoding UTF8 -NoNewline
+            & wsl.exe -d $distro -- chmod +x "$wslSdkPath/platform-tools/adb" 2>$null
+            Write-OK "Created adb wrapper: $adbWrapper"
+        } elseif (Test-Path $adbWrapper) {
+            Write-OK "adb wrapper already exists"
+        }
+
+        # Create build-tools wrappers (aapt, aapt2, zipalign, ...)
+        $wslSdkEnv = "ANDROID_HOME=$wslSdkPath"
+        $result = & wsl.exe -d $distro -- bash -c "export $wslSdkEnv; bash /mnt/d/Android/FlutterWrapper/tools/setup-build-tools-wrappers.sh" 2>&1
+        Write-Host ($result | Where-Object { $_ -match '^(==>|created|Done)' }) -ForegroundColor White
+    } else {
+        Write-Warn "Windows Android SDK not found (skipping build-tools wrappers)"
+        Write-Host "    Install Android SDK first, then re-run install.ps1"
+    }
+}
+
+# ============================================================
+# Step 7c: Setup WSL symlinks so package_config.json (W: form) resolves
+# ============================================================
+# wrapper writes package_config.json in mapped-drive (W:) form
+# (file:///w:/home/user/...). The Dart compiler/analyzer running INSIDE WSL
+# parses that as /w:/home/user/..., which does not exist unless we create
+# /w:/<dir> -> /<dir> (and /W:/<dir> -> /<dir>) symlinks. Without them,
+# WSL-side `flutter run`/`flutter build` (including web) fail with
+# 'Error when reading /w:/.../foundation.dart: No such file'.
+# tools/setup-wsl-symlink.sh creates those plus a /blaze-out dir and, for
+# legacy UNC support, /wsl.localhost/<distro> -> /. Requires sudo.
+Write-Step "Setting up WSL path symlinks (package_config W: form)"
+
+$symlinkScript = Join-Path $rootDir 'tools\setup-wsl-symlink.sh'
+if (-not (Test-Path $symlinkScript)) {
+    Write-Warn "setup-wsl-symlink.sh not found (skipping)"
+} else {
+    # Convert Windows path of the script to a WSL path (/mnt/x/...)
+    $sDrive = $symlinkScript.Substring(0,1).ToLower()
+    $sRest  = $symlinkScript.Substring(2) -replace '\\', '/'
+    $wslSymlinkScript = "/mnt/$sDrive$sRest"
+
+    # Pass detected distro and mapped drive letter (strip the trailing ':')
+    $symDrive = if ($mappedDrive) { $mappedDrive.TrimEnd(':') } else { 'W' }
+    Write-Host "    Running: bash $wslSymlinkScript $distro $symDrive (may prompt for sudo password)"
+    $symResult = & wsl.exe -d $distro -- bash -c "bash $wslSymlinkScript $distro $symDrive" 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        $upperDrive = $symDrive.ToUpper()
+        Write-OK "WSL path symlinks configured (drive form: /${symDrive}:/ and /${upperDrive}:/)"
+    } else {
+        Write-Warn "setup-wsl-symlink.sh returned non-zero (exit=$LASTEXITCODE)"
+        Write-Host ($symResult | Where-Object { $_ -match '^(===|already|created|w: form|DONE|ERROR|SKIP)' } | Out-String)
+        Write-Host "    If it failed due to sudo (no password / no tty), create the symlinks manually in WSL:" -ForegroundColor Yellow
+        Write-Host "      bash $wslSymlinkScript $distro $symDrive" -ForegroundColor Yellow
+    }
+}
+
+# ============================================================
 # Step 8: Smoke test
 # ============================================================
 Write-Step "Smoke test: flutter --version"
@@ -438,6 +626,11 @@ if ($mappedDrive) {
     Write-Host "       (No drive letter mapped - UNC projects may fail to run)"
 }
 Write-Host "    5. Restart Android Studio"
+Write-Host ""
+Write-Host "    WSL path symlinks (package_config W: form) are now configured"
+Write-Host "    automatically during install, so WSL-side flutter run/build (incl."
+Write-Host "    web) can resolve dependency paths. If a sudo prompt was skipped or"
+Write-Host "    failed, re-run manually in WSL: bash tools/setup-wsl-symlink.sh"
 Write-Host ""
 Write-Host "  Note: Drive mapping is per-user and not persistent across reboots."
 Write-Host "        Re-run install.ps1 after reboot, or run:"

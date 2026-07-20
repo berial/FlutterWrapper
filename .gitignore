@@ -23,3 +23,10 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Project/IDE data (agent memory, IDE caches) — not part of the wrapper
+.workbuddy/
+.codebuddy/
+
+# One-off generated artifact (updated issue body for manual paste)
+issue-63855-updated.md

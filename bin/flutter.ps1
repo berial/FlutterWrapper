@@ -151,9 +151,61 @@ $distro     = $config.wsl.distro
 $flutterExe = $config.flutter.executable
 $script:DriveMount = $config.workspace.driveMount
 if (-not $script:DriveMount) { $script:DriveMount = '/mnt' }
+$script:UncPrefix = $config.workspace.uncPrefix
 $script:MappedDrive = $config.workspace.mappedDrive
 if ($script:MappedDrive -and $script:MappedDrive -match '^([A-Za-z]):') {
     $script:MappedDrive = $Matches[1].ToUpper()
+}
+
+# Resolve Android SDK path for WSL (so flutter can find adb.exe on Windows side).
+# This points to the WINDOWS SDK (build-tools have Linux shell wrappers that
+# call .exe via WSL interop; platform-tools/adb.exe likewise). The WSL-local
+# SDK (config.android.wslSdkPath) is only used for NDK + cmake, see below.
+# Precedence: config.android.sdkPath > $env:ANDROID_HOME > $env:ANDROID_SDK_ROOT
+# > default D:\Android\Sdk
+$winAndroidSdk = $config.android.sdkPath
+if (-not $winAndroidSdk) { $winAndroidSdk = $env:ANDROID_HOME }
+if (-not $winAndroidSdk) { $winAndroidSdk = $env:ANDROID_SDK_ROOT }
+if (-not $winAndroidSdk -and (Test-Path 'D:\Android\Sdk')) { $winAndroidSdk = 'D:\Android\Sdk' }
+$wslAndroidSdk = if ($winAndroidSdk) { ConvertTo-WslPath $winAndroidSdk } else { $null }
+
+# Resolve WSL-local NDK path (for AGP NdkHandler).
+# Windows NDK has only windows-x86_64 toolchain (.exe); WSL Linux gradle/cmake
+# cannot execute .exe. We inject ANDROID_NDK_HOME/ROOT so AGP finds the Linux
+# NDK. local.properties ndk.dir is also set by tools/fix-local-properties.sh
+# (higher priority than env vars).
+# AGP's NdkHandler lookup order:
+#   1. android.ndkPath (build.gradle)
+#   2. ndk.dir (local.properties, deprecated but honored)
+#   3. $ANDROID_NDK_HOME / $ANDROID_NDK_ROOT env vars
+#   4. $sdk.dir/ndk/<version> (if android.ndkVersion set)
+#   5. $sdk.dir/ndk/<highest> (default)
+# Access WSL filesystem via UNC path (Test-Path on /home/... is unreliable).
+$wslNdkPath = $null
+$wslSdkLocal = $config.android.wslSdkPath
+if ($wslSdkLocal) {
+    $uncSdk = $script:UncPrefix + ($wslSdkLocal -replace '/', '\')
+    $uncNdkRoot = Join-Path $uncSdk 'ndk'
+    if (Test-Path $uncNdkRoot) {
+        $ndkVer = Get-ChildItem $uncNdkRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
+        if ($ndkVer) {
+            $wslNdkPath = $wslSdkLocal + '/ndk/' + $ndkVer.Name
+        }
+    }
+}
+
+# Resolve JAVA_HOME for WSL (wsl.exe drops Windows env vars; gradle needs JDK)
+$wslJavaHome = $config.java.home
+if (-not $wslJavaHome) { $wslJavaHome = $env:JAVA_HOME }
+if ($wslJavaHome -and $wslJavaHome -match '^([A-Za-z]:[\\/])') {
+    $wslJavaHome = ConvertTo-WslPath $wslJavaHome
+}
+
+# Resolve CHROME_EXECUTABLE for WSL (flutter web device discovery)
+$wslChrome = $config.chrome.executable
+if (-not $wslChrome) { $wslChrome = $env:CHROME_EXECUTABLE }
+if ($wslChrome -and $wslChrome -match '^([A-Za-z]:[\\/])') {
+    $wslChrome = ConvertTo-WslPath $wslChrome
 }
 
 if (-not $distro -or -not $flutterExe) {
@@ -179,21 +231,134 @@ $wslArgs = @('-d', $distro, '--cd', $wslCwd, '-e', $flutterExe) + $convertedArgs
 $isDaemon = $false
 foreach ($a in $args) {
     if ($a -eq 'daemon') { $isDaemon = $true; break }
-    # Stop scanning at first non-option (the subcommand position).
-    # Actually daemon is the subcommand itself; just check if any arg equals 'daemon'.
 }
+
+# Detect pub get: needs post-run package_config.json translation so Windows
+# Dart analyzer (using Windows-side dart-sdk via Junction) can resolve packages.
+$isPubGet = $false
+for ($i = 0; $i -lt $args.Count; $i++) {
+    if ($args[$i] -eq 'pub' -and $i + 1 -lt $args.Count -and $args[$i+1] -eq 'get') {
+        $isPubGet = $true; break
+    }
+}
+
+# package_config.json format strategy:
+#   With the /wsl.localhost/<distro> -> / symlink (created by
+#   tools/setup-wsl-symlink.sh), WSL Dart resolves Windows UNC URIs
+#   (file://///wsl.localhost/<distro>/...) to real WSL paths via the symlink.
+#   So a single Windows-UNC-format package_config.json works for BOTH:
+#     - AS Dart analyzer on Windows (reads UNC directly)
+#     - WSL flutter compiler (reads UNC via symlink)
+#   No more swap/restore. Long-running commands (flutter run) no longer risk
+#   leaving package_config.json in WSL format when killed.
+#
+#   After `flutter pub get`, we translate the freshly-generated WSL-format
+#   file to Windows UNC format (strip BOM too — Dart's JSON parser fails
+#   on BOM, see docs/troubleshooting-history.md §4.1).
+$pkgConfigPath = Join-Path $winCwd '.dart_tool\package_config.json'
 
 if ($isDaemon) {
     # Delegate to wrapper.ps1 which handles daemon byte-stream translation.
-    # Pass original (pre-translation) args + cwd via wrapper's own logic;
-    # wrapper.ps1 re-reads config and does its own path conversion.
     $wrapperPath = Join-Path $scriptDir 'wrapper.ps1'
     & powershell -NoProfile -ExecutionPolicy Bypass -File $wrapperPath
     $exitCode = $LASTEXITCODE
 } else {
-    # Plain command: forward directly (UTF-8 safe, wsl.exe inherits console IO).
-    & wsl.exe @wslArgs
-    $exitCode = $LASTEXITCODE
+    # Plain command: forward directly. Use ProcessStartInfo to inject env vars
+    # (ANDROID_HOME etc.) without polluting parent shell.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'wsl.exe'
+    $psi.Arguments = ($wslArgs | ForEach-Object {
+        if ($_ -match '\s') { '"' + $_ + '"' } else { $_ }
+    }) -join ' '
+    $psi.UseShellExecute = $false
+    # wsl.exe does NOT forward Windows process env vars into WSL by default.
+    # WSLENV declares which vars to forward (with path conversion via /u).
+    # Without this, ANDROID_HOME/JAVA_HOME are empty inside WSL and flutter
+    # cannot locate the Android SDK / adb / JDK.
+    $wslenvParts = @()
+    if ($wslAndroidSdk) {
+        $psi.EnvironmentVariables['ANDROID_HOME'] = $wslAndroidSdk
+        $psi.EnvironmentVariables['ANDROID_SDK_ROOT'] = $wslAndroidSdk
+        $wslenvParts += 'ANDROID_HOME/u','ANDROID_SDK_ROOT/u'
+    }
+    if ($wslNdkPath) {
+        # AGP's NdkHandler checks ANDROID_NDK_HOME/ROOT as fallback when
+        # sdk.dir points to a SDK without NDK installed. Injecting these
+        # forces AGP to use the WSL Linux NDK even if flutter rewrites
+        # sdk.dir to the Windows SDK path (e.g. daemon with stale env).
+        $psi.EnvironmentVariables['ANDROID_NDK_HOME'] = $wslNdkPath
+        $psi.EnvironmentVariables['ANDROID_NDK_ROOT'] = $wslNdkPath
+        $wslenvParts += 'ANDROID_NDK_HOME/u','ANDROID_NDK_ROOT/u'
+    }
+    if ($wslJavaHome) {
+        $psi.EnvironmentVariables['JAVA_HOME'] = $wslJavaHome
+        $wslenvParts += 'JAVA_HOME/u'
+    }
+    if ($wslChrome) {
+        $psi.EnvironmentVariables['CHROME_EXECUTABLE'] = $wslChrome
+        $wslenvParts += 'CHROME_EXECUTABLE/u'
+    }
+    if ($wslenvParts.Count -gt 0) {
+        $existingWslenv = $psi.EnvironmentVariables['WSLENV']
+        $newWslenv = $wslenvParts -join ':'
+        if ($existingWslenv) {
+            $psi.EnvironmentVariables['WSLENV'] = "$existingWslenv`:$newWslenv"
+        } else {
+            $psi.EnvironmentVariables['WSLENV'] = $newWslenv
+        }
+    }
+
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    try {
+        $null = $proc.Start()
+        $proc.WaitForExit()
+        $exitCode = $proc.ExitCode
+    } finally {
+        # Ensure wsl.exe is killed if still running (e.g. exception during WaitForExit)
+        if (-not $proc.HasExited) {
+            try { $proc.Kill() } catch {}
+            $proc.WaitForExit(2000) | Out-Null
+        }
+    }
+
+    # Post-pub-get: translate WSL-format package_config.json to mapped-drive
+    # form (file:///W:/...) so both AS Dart analyzer (Windows) and WSL
+    # flutter compiler can read the SAME file.
+    #
+    # Why mapped drive (not UNC):
+    #   - UNC form (file://///wsl.localhost/...) triggers Blaze workspace
+    #     detector in Windows analyzer, which stats "\\?\UNC\wsl.localhost\blaze-out"
+    #     and crashes with "OS Error 67 找不到网络名".
+    #   - Even with /blaze-out dummy dir, UNC form generates 3-backslash
+    #     Windows path (\\\wsl.localhost\...) which path package's
+    #     WindowsStyle.absolutePathToUri fails to convert back to URI
+    #     (FormatException on '?' from \\?\UNC\ prefix).
+    #   - Mapped drive form (file:///W:/...) generates standard Windows
+    #     path (W:\...) that path package handles correctly.
+    #
+    # WSL side: /W:/home -> /home symlink (created by setup-wsl-symlink.sh)
+    # lets WSL Dart resolve file:///W:/home/berial/... to /W:/home/berial/...
+    # which then resolves to /home/berial/... via the symlink.
+    #
+    # Also strip BOM (Dart JSON parser fails on BOM).
+    if ($isPubGet -and $exitCode -eq 0 -and (Test-Path $pkgConfigPath)) {
+        try {
+            $bytes = [System.IO.File]::ReadAllBytes($pkgConfigPath)
+            if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+                $bytes = $bytes[3..($bytes.Length - 1)]
+            }
+            $content = [System.Text.Encoding]::UTF8.GetString($bytes)
+            # file:///home/berial/... -> file:///W:/home/berial/...
+            $mappedDriveLower = $script:MappedDrive.ToLower()
+            $translated = $content -replace 'file:///(?!/wsl\.|/W:/|/w:/)', "file:///$($mappedDriveLower):/"
+            $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+            [System.IO.File]::WriteAllText($pkgConfigPath, $translated, $utf8NoBom)
+            Write-Log "translated package_config.json -> mapped drive ($($script:MappedDrive):) form"
+        } catch {
+            Write-Log "warn: failed to translate package_config.json: $($_.Exception.Message)"
+        }
+    }
 }
 
 # Log

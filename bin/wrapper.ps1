@@ -206,6 +206,45 @@ if ($script:MappedDrive -and $script:MappedDrive -match '^([A-Za-z]):') {
 }
 $tcpPort = if ($config.daemon.tcpPort) { [int]$config.daemon.tcpPort } else { 9876 }
 
+# Resolve Android SDK path for WSL (points to WINDOWS SDK).
+# build-tools have Linux shell wrappers that call .exe via WSL interop.
+# platform-tools/adb.exe likewise. The WSL-local SDK (wslSdkPath) is only
+# used for NDK + cmake (see $wslNdkPath below).
+$winAndroidSdk = $config.android.sdkPath
+if (-not $winAndroidSdk) { $winAndroidSdk = $env:ANDROID_HOME }
+if (-not $winAndroidSdk) { $winAndroidSdk = $env:ANDROID_SDK_ROOT }
+if (-not $winAndroidSdk -and (Test-Path 'D:\Android\Sdk')) { $winAndroidSdk = 'D:\Android\Sdk' }
+$wslAndroidSdk = if ($winAndroidSdk) { ConvertTo-WslPath $winAndroidSdk } else { $null }
+
+# Resolve WSL-local NDK path (for AGP NdkHandler).
+# Accessed via UNC because Test-Path on /home/... is unreliable on Windows.
+$wslNdkPath = $null
+$wslSdkLocal = $config.android.wslSdkPath
+if ($wslSdkLocal) {
+    $uncSdk = $script:UncPrefix + ($wslSdkLocal -replace '/', '\')
+    $uncNdkRoot = Join-Path $uncSdk 'ndk'
+    if (Test-Path $uncNdkRoot) {
+        $ndkVer = Get-ChildItem $uncNdkRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
+        if ($ndkVer) {
+            $wslNdkPath = $wslSdkLocal + '/ndk/' + $ndkVer.Name
+        }
+    }
+}
+
+# Resolve JAVA_HOME for WSL (gradle needs JDK; wsl.exe drops Windows env vars)
+$wslJavaHome = $config.java.home
+if (-not $wslJavaHome) { $wslJavaHome = $env:JAVA_HOME }
+if ($wslJavaHome -and $wslJavaHome -match '^([A-Za-z]:[\\/])') {
+    $wslJavaHome = ConvertTo-WslPath $wslJavaHome
+}
+
+# Resolve CHROME_EXECUTABLE for WSL (flutter web device discovery)
+$wslChrome = $config.chrome.executable
+if (-not $wslChrome) { $wslChrome = $env:CHROME_EXECUTABLE }
+if ($wslChrome -and $wslChrome -match '^([A-Za-z]:[\\/])') {
+    $wslChrome = ConvertTo-WslPath $wslChrome
+}
+
 $winCwd = (Get-Location).Path
 $wslCwd = ConvertTo-WslPath $winCwd
 
@@ -228,6 +267,43 @@ $wslPsi.RedirectStandardOutput = $false # inherit console (TTY detection safe)
 $wslPsi.RedirectStandardError = $false
 $wslPsi.CreateNoWindow = $true
 $wslPsi.WorkingDirectory = $winCwd
+# Inject ANDROID_HOME/JAVA_HOME so flutter daemon can find adb.exe and JDK.
+# WSLENV is required: wsl.exe does NOT forward Windows process env vars
+# into WSL by default. Without WSLENV, ANDROID_HOME/JAVA_HOME are empty.
+$wslenvParts = @()
+if ($wslAndroidSdk) {
+    $wslPsi.EnvironmentVariables['ANDROID_HOME'] = $wslAndroidSdk
+    $wslPsi.EnvironmentVariables['ANDROID_SDK_ROOT'] = $wslAndroidSdk
+    $wslenvParts += 'ANDROID_HOME/u','ANDROID_SDK_ROOT/u'
+}
+if ($wslNdkPath) {
+    # AGP NdkHandler falls back to ANDROID_NDK_HOME/ROOT when sdk.dir's SDK
+    # has no NDK. Injecting these makes AGP find the WSL Linux NDK even if
+    # flutter rewrites sdk.dir to the Windows SDK path.
+    $wslPsi.EnvironmentVariables['ANDROID_NDK_HOME'] = $wslNdkPath
+    $wslPsi.EnvironmentVariables['ANDROID_NDK_ROOT'] = $wslNdkPath
+    $wslenvParts += 'ANDROID_NDK_HOME/u','ANDROID_NDK_ROOT/u'
+}
+if ($wslJavaHome) {
+    $wslPsi.EnvironmentVariables['JAVA_HOME'] = $wslJavaHome
+    $wslenvParts += 'JAVA_HOME/u'
+}
+if ($wslChrome) {
+    $wslPsi.EnvironmentVariables['CHROME_EXECUTABLE'] = $wslChrome
+    $wslenvParts += 'CHROME_EXECUTABLE/u'
+}
+if ($wslenvParts.Count -gt 0) {
+    $existingWslenv = $wslPsi.EnvironmentVariables['WSLENV']
+    $newWslenv = $wslenvParts -join ':'
+    if ($existingWslenv) {
+        $wslPsi.EnvironmentVariables['WSLENV'] = "$existingWslenv`:$newWslenv"
+    } else {
+        $wslPsi.EnvironmentVariables['WSLENV'] = $newWslenv
+    }
+}
+if ($wslAndroidSdk) { Write-Log "ANDROID_HOME=$wslAndroidSdk (via WSLENV)" }
+if ($wslJavaHome)   { Write-Log "JAVA_HOME=$wslJavaHome (via WSLENV)" }
+if ($wslChrome)     { Write-Log "CHROME_EXECUTABLE=$wslChrome (via WSLENV)" }
 
 $wslProc = New-Object System.Diagnostics.Process
 $wslProc.StartInfo = $wslPsi

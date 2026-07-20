@@ -31,7 +31,7 @@ flutter.bat  ──>  flutter.ps1  ──>  wsl.exe  ──>  WSL 内 flutter
 | **UTF-8 安全** | 全链路 UTF-8 编码，正确处理中文路径和 emoji |
 | **日志记录** | 所有命令的 cwd、原始命令、转换后命令、退出码、耗时写入 `logs/wrapper.log` |
 | **配置文件** | 所有环境相关参数集中在 `config/wrapper.yaml`，修改后无需改脚本 |
-| **一键安装** | `install.ps1` 自动检测 WSL、Flutter、生成配置、创建 dart-sdk Junction、跑 smoke test |
+| **一键安装** | `install.ps1` 自动检测 WSL、Flutter、生成配置、创建 dart-sdk Junction、配置 WSL 路径符号链接、跑 smoke test |
 
 ## 目录结构
 
@@ -96,10 +96,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
 5. 推导 dart 可执行文件路径
 6. 检测 UNC 前缀（`\\wsl.localhost\<distro>`）和盘符挂载点（`/mnt`）
 7. **映射网络驱动器**（W: → `\\wsl.localhost\<distro>`，绕过 CMD 不支持 UNC cwd 的限制，见下方说明）
-8. 生成 `config/wrapper.yaml`（含 `mappedDrive: W`）
-9. 创建 `bin/cache/dart-sdk` Junction（指向 Windows 侧的 dart-sdk，供 Dart 插件分析）
-10. 写 `bin/cache/flutter.version.json`
-11. 跑 smoke test：`flutter --version`
+8. **配置 WSL 路径符号链接**（需 sudo）：建 `/w:` 与 `/W:` → 根目录的符号链接，让 WSL 侧能解析 `package_config.json` 里的 `file:///w:/...` 路径（否则 web / WSL 内 run、build 报 `No such file`）。详见 [docs/troubleshooting-history.md Phase 8](../docs/troubleshooting-history.md)
+9. 生成 `config/wrapper.yaml`（含 `mappedDrive: W`）
+10. 创建 `bin/cache/dart-sdk` Junction（指向 Windows 侧的 dart-sdk，供 Dart 插件分析）
+11. 写 `bin/cache/flutter.version.json`
+12. 跑 smoke test：`flutter --version`
 
 ### ⚠️ 必须用映射盘符打开 WSL 项目
 
@@ -276,6 +277,67 @@ AS stdout ← [Console]::Out    ─┘
 - **手动测试需设备**：`flutter run` / Hot Reload / Debug / Build 等需要连接真实设备或模拟器，无法自动化测试。
 - **daemon 端口固定 9876**：多开 AS 实例会冲突（后续可改为动态端口）。
 - **PS 5.1 限制**：本项目针对 Windows PowerShell 5.1（AS 调用 `flutter.bat` 时的默认 shell）。PS 7+ 未测试。
+- **Web 设备（Edge/Chrome）不在 WSL 运行列表**：Flutter 只在 Windows/macOS 注册 Edge 设备；WSL 内无 `chrome (web)` 除非装 Linux Chromium。可用 `flutter run -d web-server` + 手动 Windows Edge 绕过。详见 Known Issues #2。
+
+## Known Issues
+
+### Issue #1: Analysis Server 无法索引 WSL 项目（import 全红）
+
+**Title**: Analysis Server cannot index WSL project opened via mapped drive or UNC.
+
+**Symptom**: Android Studio 中所有 `import 'package:xxx/...'` 报红 `Target of URI doesn't exist`，但 `flutter run` / `flutter build` / `flutter daemon` 全部正常工作。
+
+**Root cause** (已确认，2026-07-20 修订):
+
+analyzer 的 `_PhysicalResource.exists`（[`pkg/analyzer/lib/file_system/physical_file_system.dart`](https://github.com/dart-lang/sdk/blob/main/pkg/analyzer/lib/file_system/physical_file_system.dart)）在 3.11.5 stable 缺少 try-catch，导致 `dart:io` 的 `_Directory.existsSync()` 在某些 Windows UNC 路径上抛 `FileSystemException` (errno 161 = `ERROR_INVALID_PATH`) 时直接传播，破坏 Analysis Server 索引。
+
+```
+FileSystemException: Exists failed, path = '\\\wsl.localhost\Ubuntu-24.04\home\berial\.pub-cache\hosted\pub.dev\animated_stack_widget-0.0.4\lib\fix_data' (OS Error: 指定的路径无效。, errno = 161)
+#0  _Directory.existsSync (dart:io/directory_impl.dart:97)
+#1  _PhysicalResource.exists (package:analyzer/file_system/physical_file_system.dart:368)
+```
+
+- 报错路径 `animated_stack_widget-0.0.4\lib\fix_data` 实际不存在（lib 下只有 `src/` 和 `animated_stack_widget.dart`）
+- Windows 对这类无效 UNC 子路径抛 errno 161，而不是返回 `false`
+- **main 分支已修复并回填 stable**：`_PhysicalResource.exists` 和 `_PhysicalLink.exists` 都加了 `try { ... } on FileSystemException { return false; }`
+- 该修复已随 **Dart 3.12.2 stable**（及当前 stable HEAD）发布；**Dart 3.11.5 及以下**未含此修复
+
+> ⚠️ 前期曾误判根因为 `package:path` 的 `FormatException`。已纠正：analyzer 用 `Uri.file()` 而非 `path.toUri()`，`Uri.file()` 能正确处理 `\\?\UNC\...`，**不会触发 FormatException**。`package:path` 的 `FormatException` 是独立 bug，单独提 Issue 到 `dart-lang/core`，但不是 AS import 全红的根因。
+
+**Affected**: Android Studio / IntelliJ Dart 插件 / Dart Analysis Server（snapshot 内嵌 analyzer 副本，无法用 dependency_overrides 绕过）。
+
+**Not FlutterWrapper's bug**: FlutterWrapper 的 run/build/daemon 全部正常，此问题超出 Wrapper 职责范围。
+
+**Status**: ✅ **Resolved in Dart 3.12.2 stable (2026-07-20 verified)**.
+- analyzer 的 try-catch 已回填 stable（**3.12.2 起**），当前 stable HEAD 也含
+- 主 Issue（analyzer 缺 try-catch）：https://github.com/dart-lang/sdk/issues/63855 —— **已将标题/正文更新为「已修复」记录**（保留作根因锚点，供仍卡在 3.11.x 的用户）
+- 次要 Issue（`package:path` 的 `FormatException`）：https://github.com/dart-lang/core/issues/980 —— **仍然有效**，与 analyzer 修复无关
+
+**Workarounds**（Dart < 3.12.2 时期的临时规避，升级后不再需要）:
+> 升级到 **Dart ≥ 3.12.2**（即 Flutter ≥ 3.44.6，本项目已验证）后，import 全红问题已彻底消失，以下方案无需采用。
+
+1. **AS Remote Development + WSL** — AS 在 WSL 内运行，路径全部 Linux 化
+2. **本地项目副本** — Windows 副本用于编辑/分析，WSL 副本用于编译
+3. **关闭 AS Dart 分析器** — 最快但损失大
+4. **等待 stable SDK 回填 main 的 try-catch** — 现已随 Dart 3.12.2 完成
+
+**详细技术分析**: [docs/analysis-server-wsl-bug.md](docs/analysis-server-wsl-bug.md)
+**Issue 草稿**: [docs/issue-dart-lang-core.md](docs/issue-dart-lang-core.md)
+
+### Issue #2: Web 设备（Edge / Chrome）不在 WSL 运行列表
+
+**现象**：Android Studio 的 Run/Devices 下拉里只有 `Linux (desktop)`，没有 `Chrome (web)` / `Edge (web)`；`flutter devices`（WSL 内）也只列出 Linux。
+
+**根因**（确认，2026-07-20）：
+- Flutter **只在 Windows/macOS 上注册 Edge 设备**，Linux（WSL）上根本不生成 `edge (web)` 设备类型 —— 平台硬限制，**Edge 永远不会出现在 WSL 列表**。
+- WSL 内若没装 Linux Chrome，`chrome (web)` 也不会出现。
+- ⚠️ **`CHROME_EXECUTABLE` 指向 Windows `msedge.exe` 不可行**：`flutter doctor` 能认出 `[✓] Chrome - develop for the web`，但 `flutter devices` 会因 msedge 从 WSL 启动不按 `--version` 静默退出（拉起完整 GUI 进程）而**卡死超时（>4.5 分钟）**。wrapper 当前仍向 WSL 注入该变量，仅对 `doctor` 有效，**不能用于设备发现**。
+
+**可行的 web 开发路径**（WSL 侧运行 Flutter）：
+1. **`web-server` + 手动 Windows Edge（推荐，零安装）**：`flutter run -d web-server`（或在 AS 自定义 Run Configuration 加 `-d web-server`），日志打印 `http://localhost:PORT`，在 **Windows Edge** 打开即可，热重载正常。依赖 WSL2 localhost 转发（Windows 默认开启）。注意 3.44.6 下 `flutter devices` 默认不列 `web-server`，需从终端/自定义配置启动。
+2. **装 Linux Chromium（原生 web 设备下拉）**：WSL 内 `sudo apt install chromium-browser`，重启 AS 后下拉出现 `chrome (web)`（标签为 Chrome 而非 Edge，同内核），窗口经 WSLg 显示在 Windows 上。
+
+**Status**: 平台限制，非 FlutterWrapper 缺陷。不计划伪造 edge 设备。
 
 ## 故障排查
 
