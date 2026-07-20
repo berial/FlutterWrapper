@@ -1,0 +1,4 @@
+# Placeholder for FlutterSdkUtil.isFlutterSdkHome validation.
+# This file MUST exist (without .bat extension) for the Flutter IntelliJ plugin
+# to recognize the directory as a Flutter SDK home.
+# The actual command entry point is flutter.bat, which forwards to WSL.

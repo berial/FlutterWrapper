@@ -1,0 +1,363 @@
+# install.ps1 - FlutterWrapper installer
+#
+# Phase 10: One-shot setup script. Checks prerequisites, generates
+# config/wrapper.yaml, creates dart-sdk Junction, runs smoke test.
+#
+# Usage:
+#   powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
+#
+# Run from the project root (where this file lives).
+
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+$rootDir = $PSScriptRoot
+$configPath = Join-Path $rootDir 'config\wrapper.yaml'
+$dartSdkLink = Join-Path $rootDir 'bin\cache\dart-sdk'
+
+function Write-Step  { param($msg) Write-Host ("==> " + $msg) -ForegroundColor Cyan }
+function Write-OK    { param($msg) Write-Host ("    OK  " + $msg) -ForegroundColor Green }
+function Write-Warn  { param($msg) Write-Host ("    WARN " + $msg) -ForegroundColor Yellow }
+function Write-Err   { param($msg) Write-Host ("    FAIL " + $msg) -ForegroundColor Red }
+
+function Test-Command {
+    param([string]$Name)
+    $null = Get-Command $Name -ErrorAction SilentlyContinue
+    return $?
+}
+
+# ============================================================
+# Step 1: Check prerequisites on Windows
+# ============================================================
+Write-Step "Checking Windows prerequisites"
+
+if (-not (Test-Command 'wsl.exe')) {
+    Write-Err "wsl.exe not found. Install WSL2 first: wsl --install"
+    exit 1
+}
+Write-OK "wsl.exe found"
+
+if (-not (Test-Command 'powershell.exe')) {
+    Write-Err "powershell.exe not found"
+    exit 1
+}
+Write-OK "powershell.exe found"
+
+# ============================================================
+# Step 2: List WSL distros and pick one
+# ============================================================
+Write-Step "Checking WSL distros"
+
+# wsl.exe --list --quiet outputs UTF-16LE, but PS 5.1 reads it as ANSI,
+# so each UTF-16 char becomes "char + \0". Strip null chars to recover
+# the actual distro name.
+$distroList = @()
+try {
+    $raw = & wsl.exe --list --quiet 2>$null
+    foreach ($line in $raw) {
+        # Remove null chars (\0) and whitespace
+        $clean = ($line -replace "`0", '').Trim()
+        if ($clean -and $clean -match '^[A-Za-z0-9._-]+$') {
+            $distroList += $clean
+        }
+    }
+} catch {
+    Write-Err "Failed to list WSL distros: $($_.Exception.Message)"
+    exit 1
+}
+
+if (-not $distroList -or $distroList.Count -eq 0) {
+    Write-Err "No WSL distros installed. Install one first: wsl --install -d Ubuntu-24.04"
+    exit 1
+}
+
+Write-Host "    Available distros:"
+foreach ($d in $distroList) { Write-Host "      - $d" }
+
+# Pick distro: prefer Ubuntu-24.04, else first in list
+$distro = $distroList | Where-Object { $_ -eq 'Ubuntu-24.04' } | Select-Object -First 1
+if (-not $distro) { $distro = $distroList[0] }
+
+# Allow override via -Distro parameter
+if ($args.Length -gt 0) {
+    $paramName = $args[0]
+    if ($paramName -eq '-Distro' -and $args.Length -gt 1) {
+        $distro = $args[1]
+    }
+}
+
+# Verify chosen distro exists
+if ($distroList -notcontains $distro) {
+    Write-Err "Selected distro '$distro' not in available list: $($distroList -join ', ')"
+    exit 1
+}
+Write-OK "Using distro: $distro"
+
+# ============================================================
+# Step 3: Detect Flutter path inside WSL
+# ============================================================
+Write-Step "Detecting Flutter in WSL ($distro)"
+
+# Helper: check if a string is a plausible absolute path (starts with /)
+function Test-ValidPath {
+    param([string]$s)
+    return $s -and $s.StartsWith('/') -and -not $s.Contains(' ')
+}
+
+# Try several detection methods
+$flutterExe = $null
+
+# Method 1: command -v flutter (login shell so vfox/PATH is loaded)
+$wslFlutterPath = $null
+try {
+    $wslFlutterPath = (& wsl.exe -d $distro -- bash -lc 'command -v flutter 2>/dev/null' 2>$null).Trim()
+} catch {}
+if (Test-ValidPath $wslFlutterPath) {
+    Write-OK "Flutter found in PATH: $wslFlutterPath"
+    $flutterExe = $wslFlutterPath
+}
+
+# Method 2: vfox default symlink location
+if (-not $flutterExe) {
+    Write-Warn "flutter not in WSL PATH (bash login shell)"
+    $vfoxCandidate = $null
+    try {
+        $vfoxCandidate = (& wsl.exe -d $distro -- bash -lc 'readlink -f ~/.vfox/sdks/flutter/bin/flutter 2>/dev/null' 2>$null).Trim()
+    } catch {}
+    if (Test-ValidPath $vfoxCandidate) {
+        # Use the symlink path (not resolved) so vfox version switching works
+        $flutterExe = '/home/' + (& wsl.exe -d $distro -- bash -lc 'whoami' 2>$null).Trim() + '/.vfox/sdks/flutter/bin/flutter'
+        Write-OK "Flutter found via vfox: $flutterExe"
+    }
+}
+
+# Method 3: ask user
+if (-not $flutterExe) {
+    Write-Host "    Could not auto-detect Flutter path in WSL."
+    $userPath = Read-Host "    Enter absolute path to flutter executable in WSL (e.g. /home/user/flutter/bin/flutter)"
+    if (-not (Test-ValidPath $userPath)) {
+        Write-Err "Invalid path: '$userPath'"
+        exit 1
+    }
+    $flutterExe = $userPath.Trim()
+}
+
+# Verify it actually runs
+Write-Host "    Verifying: $flutterExe --version"
+$versionOutput = & wsl.exe -d $distro -- $flutterExe --version 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Err "Failed to run '$flutterExe --version' in WSL (exit=$LASTEXITCODE)"
+    Write-Host ($versionOutput | Out-String)
+    exit 1
+}
+$firstLine = ($versionOutput | Select-Object -First 1).Trim()
+Write-OK "Flutter runs: $firstLine"
+
+# ============================================================
+# Step 4: Derive dart executable path
+# ============================================================
+Write-Step "Deriving dart executable path"
+$dartExe = $flutterExe -replace '/flutter$', '/dart'
+$dartCheck = & wsl.exe -d $distro -- test -f $dartExe 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Warn "dart not found at $dartExe (will configure anyway)"
+} else {
+    Write-OK "dart executable: $dartExe"
+}
+
+# ============================================================
+# Step 5: Detect UNC prefix and drive mount
+# ============================================================
+Write-Step "Detecting WSL UNC prefix and drive mount"
+
+# UNC prefix: \\wsl.localhost\<distro> (preferred) or \\wsl$\<distro>
+$uncPrefix = "\\wsl.localhost\$distro"
+
+# Verify UNC is accessible
+$uncAccessible = Test-Path $uncPrefix
+if (-not $uncAccessible) {
+    $fallback = "\\wsl$\$distro"
+    if (Test-Path $fallback) {
+        $uncPrefix = $fallback
+        Write-Warn "Using legacy UNC: $uncPrefix"
+    } else {
+        Write-Warn "Cannot access $uncPrefix (may still work later)"
+    }
+} else {
+    Write-OK "UNC prefix: $uncPrefix"
+}
+
+# Drive mount: usually /mnt (WSL default), can be /mnt/c, /mnt/d, etc.
+$driveMount = '/mnt'
+Write-OK "Drive mount: $driveMount (WSL default)"
+
+# ============================================================
+# Step 6: Write config/wrapper.yaml
+# ============================================================
+Write-Step "Writing config/wrapper.yaml"
+
+$configDir = Split-Path -Parent $configPath
+if (-not (Test-Path $configDir)) {
+    New-Item -ItemType Directory -Path $configDir -Force | Out-Null
+}
+
+# Preserve existing version if present
+$existingVersion = 1
+if (Test-Path $configPath) {
+    $oldContent = Get-Content $configPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+    if ($oldContent -match 'version:\s*(\d+)') { $existingVersion = [int]$Matches[1] }
+}
+
+$configContent = @"
+# FlutterWrapper configuration
+# Auto-generated by install.ps1 on $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+# Edit manually if needed; scripts do not hardcode paths.
+
+version: $existingVersion
+
+wsl:
+  # WSL distro name (wsl.exe -d <distro>)
+  distro: $distro
+
+flutter:
+  # Absolute path to flutter executable inside WSL.
+  # If using vfox, this points to the version-agnostic symlink
+  # (~/.vfox/sdks/flutter -> ~/.vfox/cache/flutter/v-<ver>/...).
+  executable: $flutterExe
+
+dart:
+  # Absolute path to dart executable inside WSL (same SDK as flutter).
+  executable: $dartExe
+
+workspace:
+  # UNC prefix for WSL->Windows path translation.
+  # e.g. /home/user/demo -> \\wsl.localhost\$distro\home\user\demo
+  uncPrefix: $uncPrefix
+
+  # Where WSL mounts Windows drives, for Windows->WSL path translation.
+  # e.g. D:\demo -> /mnt/d/demo
+  driveMount: $driveMount
+"@
+
+Set-Content -Path $configPath -Value $configContent -Encoding UTF8
+Write-OK "Wrote $configPath"
+
+# ============================================================
+# Step 7: Create dart-sdk Junction (for Android Studio Dart plugin)
+# ============================================================
+Write-Step "Setting up bin/cache/dart-sdk"
+
+$cacheDir = Split-Path -Parent $dartSdkLink
+if (-not (Test-Path $cacheDir)) {
+    New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+}
+
+if (Test-Path $dartSdkLink) {
+    $linkInfo = Get-Item $dartSdkLink -Force
+    if ($linkInfo.LinkType -eq 'Junction') {
+        Write-OK "Junction already exists: $dartSdkLink -> $($linkInfo.Target)"
+    } else {
+        Write-Warn "$dartSdkLink exists but is not a Junction (skipping)"
+    }
+} else {
+    # Find Windows-side dart-sdk to link to
+    # 1. Try vfox global cache: C:\Users\<user>\vfox-global\flutter\bin\cache\dart-sdk
+    $vfoxDartSdk = Join-Path $env:USERPROFILE 'vfox-global\flutter\bin\cache\dart-sdk'
+    # 2. Try standard Flutter install: C:\flutter\bin\cache\dart-sdk
+    $stdDartSdk = 'C:\flutter\bin\cache\dart-sdk'
+
+    $dartSdkTarget = $null
+    if (Test-Path $vfoxDartSdk) {
+        $dartSdkTarget = $vfoxDartSdk
+    } elseif (Test-Path $stdDartSdk) {
+        $dartSdkTarget = $stdDartSdk
+    }
+
+    if ($dartSdkTarget) {
+        try {
+            cmd /c mklink /J "$dartSdkLink" "$dartSdkTarget" | Out-Null
+            if (Test-Path $dartSdkLink) {
+                Write-OK "Created Junction: $dartSdkLink -> $dartSdkTarget"
+            } else {
+                Write-Warn "mklink did not create Junction (run as Administrator?)"
+            }
+        } catch {
+            Write-Warn "Failed to create Junction: $($_.Exception.Message)"
+        }
+    } else {
+        Write-Warn "No Windows-side dart-sdk found to link to."
+        Write-Host "    Install Flutter on Windows (or copy dart-sdk folder) if AS needs Dart analysis."
+        Write-Host "    Or run: mklink /J `"$dartSdkLink`" `"<path-to-windows-dart-sdk>`""
+    }
+}
+
+# Also ensure bin/cache/flutter.version.json exists (so AS sees a versioned SDK)
+$versionJson = Join-Path $rootDir 'bin\cache\flutter.version.json'
+if (-not (Test-Path $versionJson)) {
+    # Try to fetch version info from WSL flutter --version --machine
+    Write-Host "    Fetching flutter --version --machine ..."
+    $versionJsonRaw = & wsl.exe -d $distro -- $flutterExe --version --machine 2>$null
+    if ($LASTEXITCODE -eq 0 -and $versionJsonRaw) {
+        try {
+            $versionObj = $versionJsonRaw | ConvertFrom-Json
+            # Rewrite flutterRoot to a WSL-style path (informational only)
+            Set-Content -Path $versionJson -Value ($versionObj | ConvertTo-Json -Depth 10) -Encoding UTF8
+            Write-OK "Wrote $versionJson"
+        } catch {
+            Write-Warn "Could not parse version JSON: $($_.Exception.Message)"
+        }
+    } else {
+        Write-Warn "Could not fetch flutter --version --machine"
+    }
+} else {
+    Write-OK "flutter.version.json already exists"
+}
+
+# ============================================================
+# Step 8: Smoke test
+# ============================================================
+Write-Step "Smoke test: flutter --version"
+
+$flutterBat = Join-Path $rootDir 'bin\flutter.bat'
+if (-not (Test-Path $flutterBat)) {
+    Write-Err "Missing $flutterBat (project structure incomplete)"
+    exit 1
+}
+
+$smoke = & cmd /c "$flutterBat --version 2>&1"
+if ($LASTEXITCODE -eq 0) {
+    $firstLine = ($smoke | Select-Object -First 1).Trim()
+    Write-OK "Smoke test PASS: $firstLine"
+} else {
+    Write-Warn "Smoke test returned non-zero exit code ($LASTEXITCODE)"
+    Write-Host ($smoke -join "`n")
+}
+
+# ============================================================
+# Step 9: Final summary
+# ============================================================
+Write-Host ""
+Write-Host "============================================================" -ForegroundColor Green
+Write-Host "  FlutterWrapper installation complete!" -ForegroundColor Green
+Write-Host "============================================================" -ForegroundColor Green
+Write-Host ""
+Write-Host "  Flutter SDK Path (set in Android Studio > Settings > Languages & Frameworks > Flutter):"
+Write-Host "    $rootDir" -ForegroundColor White
+Write-Host ""
+Write-Host "  Dart SDK Path (Settings > Languages & Frameworks > Dart):"
+Write-Host "    $dartSdkLink" -ForegroundColor White
+Write-Host ""
+Write-Host "  Configuration:"
+Write-Host "    $configPath" -ForegroundColor White
+Write-Host ""
+Write-Host "  Logs:"
+Write-Host "    $rootDir\logs\wrapper.log" -ForegroundColor White
+Write-Host ""
+Write-Host "  Next steps:"
+Write-Host "    1. Open Android Studio"
+Write-Host "    2. Settings > Languages & Frameworks > Flutter > Flutter SDK Path"
+Write-Host "       -> $rootDir"
+Write-Host "    3. Settings > Languages & Frameworks > Dart > Dart SDK Path"
+Write-Host "       -> $dartSdkLink"
+Write-Host "    4. Restart Android Studio"
+Write-Host ""

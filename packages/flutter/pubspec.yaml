@@ -1,0 +1,4 @@
+name: flutter
+description: Placeholder pubspec for FlutterWrapper SDK validation. The real
+  Flutter SDK lives in WSL; this file only satisfies isFlutterSdkHome checks.
+publish_to: none
