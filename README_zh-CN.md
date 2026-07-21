@@ -70,6 +70,14 @@ fw status                 # 快速状态摘要
 | **日志拆分** | `logs/flutter.log` / `dart.log` / `bridge.log` |
 | **UTF-8 安全** | 全链路 UTF-8，正确处理中文路径 |
 
+## v3.1 更新内容
+
+- **Doctor 模块化**：`lib/doctor/check-*.ps1` — 13 类检查拆分到 4 个独立模块
+- **Provider 适配器**：`lib/providers/vfox.ps1` + `fvm.ps1` — SDK 管理器插件架构
+- **诊断报告**：`fw doctor --collect` 生成 `flutterwrapper-report.zip`，提交 Issue 直接上传
+- **CI 流水线**：每次推送自动检查 PowerShell 语法、ShellCheck、冒烟测试
+- **VERSION 文件**：统一版本号来源，所有脚本读取同一文件
+
 ## 支持矩阵
 
 | 组件 | 支持版本 |
