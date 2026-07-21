@@ -25,10 +25,12 @@ java:
   home: /home/berial/.vfox/sdks/java
 
 chrome:
-  # Path to Chrome executable for flutter web device discovery.
-  # Chrome is installed directly in WSL (sudo apt install google-chrome-stable),
-  # so no /mnt/c/... Windows path conversion needed.
-  executable: /usr/bin/google-chrome
+  # Path to Chrome/Edge executable for flutter web device discovery.
+  # WSL Chrome was too slow via WSLg — uninstalled.
+  # Option A: Install Windows Chrome and set executable to its /mnt/c/ path.
+  # Option B: Use `flutter run -d web-server` + open in Windows Edge/Chrome.
+  # Leave empty to disable CHROME_EXECUTABLE forwarding (no web device in AS).
+  executable: 
 
 pub:
   # PUB_CACHE location inside WSL. wsl.exe -e bypasses the shell, so
