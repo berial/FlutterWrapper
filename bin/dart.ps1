@@ -19,43 +19,8 @@ $rootDir   = Split-Path -Parent $scriptDir
 $configPath = Join-Path $rootDir 'config\wrapper.yaml'
 $logPath    = Join-Path $rootDir 'logs\dart.log'
 
-# ============================================================
-# Minimal YAML parser (supports 2-level nesting, key: value only)
-# ============================================================
-function Read-WrapperConfig {
-    param([string]$Path)
-    if (-not (Test-Path $Path)) {
-        throw "FlutterWrapper: config file not found: $Path"
-    }
-    $config = @{}
-    $currentSection = $null
-    # Force UTF-8: PS 5.1 defaults to system codepage (GBK on zh-CN),
-    # which corrupts UTF-8 multi-byte chars and can eat newlines adjacent
-    # to Chinese characters, merging comment lines with key:value lines.
-    foreach ($line in Get-Content -Path $Path -Encoding UTF8) {
-        # Strip trailing comments (but keep # inside quoted values - simple version)
-        $stripped = $line -replace '\s+#.*$', ''
-        if ($stripped -match '^\s*$') { continue }
-        # Top-level key: value  OR  top-level key: (starts a section)
-        if ($stripped -match '^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$') {
-            $key = $Matches[1]
-            $val = $Matches[2].Trim()
-            if ($val) {
-                $config[$key] = $val.Trim('"').Trim("'")
-            } else {
-                $currentSection = $key
-                $config[$key] = @{}
-            }
-        }
-        # Nested key: value (indented 2+ spaces)
-        elseif ($stripped -match '^\s+([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$' -and $currentSection) {
-            $key = $Matches[1]
-            $val = $Matches[2].Trim().Trim('"').Trim("'")
-            $config[$currentSection][$key] = $val
-        }
-    }
-    return $config
-}
+# Shared helpers (dot-sourced from lib/config.ps1)
+. "$PSScriptRoot/../lib/config.ps1"
 
 # ============================================================
 # Path conversion (from Phase 3, validated 40/40 PASS)

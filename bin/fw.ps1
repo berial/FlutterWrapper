@@ -3,20 +3,7 @@
 # Single entry point for all FlutterWrapper operations.
 # Routes to doctor, repair, provider, flutter helpers, status, etc.
 #
-# Usage:
-#   fw doctor              Full diagnostic check
-#   fw doctor --fix-safe   Auto-repair safe items only
-#   fw doctor --json       Machine-readable output
-#   fw repair <module>     Repair a specific component
-#   fw repair --list       List available repair modules
-#   fw provider            Show detected SDK providers
-#   fw flutter current     Show current Flutter version (via provider)
-#   fw flutter use <ver>   Switch Flutter version (routes to provider)
-#   fw status              Quick environment summary
-#   fw version             Show FlutterWrapper version
-#   fw setup               Re-run configuration detection
-#
-# v3.0: Initial implementation per docs/new_target_v3.md.
+# Usage: see `fw help` or README.
 
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -26,34 +13,11 @@ $rootDir   = Split-Path -Parent $scriptDir
 $configPath = Join-Path $rootDir 'config\wrapper.yaml'
 
 # ============================================================
-# YAML & config helpers (shared)
+# Shared helpers (dot-sourced from lib/config.ps1)
 # ============================================================
-function Read-WrapperConfig {
-    param([string]$Path)
-    if (-not (Test-Path $Path)) { return $null }
-    $config = @{}
-    $currentSection = $null
-    foreach ($line in Get-Content -Path $Path -Encoding UTF8) {
-        $stripped = $line -replace '\s+#.*$', ''
-        if ($stripped -match '^\s*$') { continue }
-        if ($stripped -match '^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$') {
-            $key = $Matches[1]; $val = $Matches[2].Trim()
-            if ($val) { $config[$key] = $val.Trim('"').Trim("'") }
-            else { $currentSection = $key; $config[$key] = @{} }
-        }
-        elseif ($stripped -match '^\s+([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$' -and $currentSection) {
-            $config[$currentSection][$Matches[1]] = $Matches[2].Trim().Trim('"').Trim("'")
-        }
-    }
-    return $config
-}
+. "$PSScriptRoot/../lib/config.ps1"
 
-function Write-Step  { param($m) Write-Host ("==> " + $m) -ForegroundColor Cyan }
-function Write-OK    { param($m) Write-Host ("    OK  " + $m) -ForegroundColor Green }
-function Write-Warn  { param($m) Write-Host ("    WARN " + $m) -ForegroundColor Yellow }
-function Write-Err   { param($m) Write-Host ("    FAIL " + $m) -ForegroundColor Red }
-
-$config = Read-WrapperConfig $configPath
+$config = Read-WrapperConfigSafe $configPath
 $distro = if ($config) { $config.wsl.distro } else { $null }
 
 # ============================================================
@@ -384,7 +348,9 @@ function Show-Status {
 # Version
 # ============================================================
 function Show-Version {
-    Write-Host "FlutterWrapper v3.0.0" -ForegroundColor Cyan
+    $verFile = Join-Path $rootDir 'VERSION'
+    $ver = if (Test-Path $verFile) { (Get-Content $verFile -Raw).Trim() } else { '3.0.0' }
+    Write-Host "FlutterWrapper v$ver" -ForegroundColor Cyan
     Write-Host "Compatibility Orchestration Layer for Windows AS + WSL Flutter" -ForegroundColor Gray
     if ($config) {
         Write-Host "Config: $configPath"

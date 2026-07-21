@@ -2,13 +2,6 @@
 #
 # Checks all components of the Windows-AS + WSL-Flutter bridge and
 # reports status with actionable fix suggestions.
-#
-# Usage:
-#   flutter-wrapper doctor         (full check)
-#   flutter-wrapper doctor -quick  (fast check, skip version checks)
-#   flutter-wrapper doctor -json   (machine-readable output)
-#
-# v2.1: Initial implementation per docs/new_target_v2.md §13.
 
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -84,38 +77,10 @@ function Write-Section {
 }
 
 # ============================================================
-# YAML parser (shared logic with flutter.ps1 / dart.ps1)
-# ============================================================
-function Read-WrapperConfig {
-    param([string]$Path)
-    if (-not (Test-Path $Path)) {
-        return $null
-    }
-    $config = @{}
-    $currentSection = $null
-    foreach ($line in Get-Content -Path $Path -Encoding UTF8) {
-        $stripped = $line -replace '\s+#.*$', ''
-        if ($stripped -match '^\s*$') { continue }
-        if ($stripped -match '^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$') {
-            $key = $Matches[1]
-            $val = $Matches[2].Trim()
-            if ($val) {
-                $config[$key] = $val.Trim('"').Trim("'")
-            } else {
-                $currentSection = $key
-                $config[$key] = @{}
-            }
-        }
-        elseif ($stripped -match '^\s+([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$' -and $currentSection) {
-            $key = $Matches[1]
-            $val = $Matches[2].Trim().Trim('"').Trim("'")
-            $config[$currentSection][$key] = $val
-        }
-    }
-    return $config
-}
+# Shared helpers (dot-sourced from lib/config.ps1)
+. "$PSScriptRoot/../lib/config.ps1"
 
-# Path conversion (from flutter.ps1, for validation)
+# Path conversion (local copy for validation)
 function ConvertTo-WslPath {
     param(
         [string]$Path,
@@ -158,7 +123,7 @@ function ConvertTo-WslPath {
 # ============================================================
 Write-Section "1. Configuration"
 
-$config = Read-WrapperConfig $configPath
+$config = Read-WrapperConfigSafe $configPath
 if (-not $config) {
     Write-Check 'Config file (config/wrapper.yaml)' 'FAIL' `
         "Not found at $configPath" `

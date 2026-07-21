@@ -1,7 +1,7 @@
 # install.ps1 - FlutterWrapper installer
 #
-# Phase 10 / v2.2: One-shot setup script. Checks prerequisites, generates
-# config/wrapper.yaml, creates dart-sdk Junction, runs smoke test.
+# One-shot setup script. Checks prerequisites, generates config,
+# creates dart-sdk Junction, runs smoke test.
 #
 # Usage:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1

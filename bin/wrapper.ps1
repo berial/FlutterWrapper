@@ -1,6 +1,5 @@
-# wrapper.ps1 - FlutterWrapper daemon TCP-mode translator (text mode)
+# wrapper.ps1 - FlutterWrapper daemon TCP-mode translator
 #
-# Phase 6 (revised 2026-07-20): Text mode instead of byte stream.
 # PowerShell 5.1 host's [Console]::OpenStandardInput()/Output() (Stream) is
 # unreliable when stdin/stdout are redirected by parent process:
 #   - OpenStandardInput().Read() blocks indefinitely
@@ -25,26 +24,8 @@ $rootDir    = Split-Path -Parent $scriptDir
 $configPath = Join-Path $rootDir 'config\wrapper.yaml'
 $logPath    = Join-Path $rootDir 'logs\bridge.log'
 
-# ============================================================
-# YAML parser (shared with flutter.ps1)
-# ============================================================
-function Read-WrapperConfig {
-    param([string]$Path)
-    if (-not (Test-Path $Path)) { throw "FlutterWrapper: config not found: $Path" }
-    $config = @{}; $currentSection = $null
-    foreach ($line in Get-Content -Path $Path -Encoding UTF8) {
-        $stripped = $line -replace '\s+#.*$', ''
-        if ($stripped -match '^\s*$') { continue }
-        if ($stripped -match '^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$') {
-            $key = $Matches[1]; $val = $Matches[2].Trim()
-            if ($val) { $config[$key] = $val.Trim('"').Trim("'") }
-            else { $currentSection = $key; $config[$key] = @{} }
-        } elseif ($stripped -match '^\s+([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$' -and $currentSection) {
-            $config[$currentSection][$Matches[1]] = $Matches[2].Trim().Trim('"').Trim("'")
-        }
-    }
-    return $config
-}
+# Shared helpers (dot-sourced from lib/config.ps1)
+. "$PSScriptRoot/../lib/config.ps1"
 
 # ============================================================
 # Path conversion (Phase 3, 40/40 PASS)
