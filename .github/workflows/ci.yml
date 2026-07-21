@@ -11,7 +11,7 @@ jobs:
   lint-powershell:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: PowerShell syntax check
         run: |
           $scripts = Get-ChildItem -Recurse -Include *.ps1 -Path bin,lib,install.ps1 | Where-Object { $_.Name -ne 'daemon-direct-test.ps1' }
@@ -32,7 +32,7 @@ jobs:
   lint-shell:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: ShellCheck
         run: |
           sh_files=$(find tools -name '*.sh' 2>/dev/null || true)
@@ -46,7 +46,7 @@ jobs:
   check-version:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Verify VERSION file
         run: |
           if [ ! -f VERSION ]; then
