@@ -30,6 +30,12 @@ chrome:
   # so no /mnt/c/... Windows path conversion needed.
   executable: /usr/bin/google-chrome
 
+pub:
+  # PUB_CACHE location inside WSL. wsl.exe -e bypasses the shell, so
+  # .zshrc exports are invisible. Set here to forward via WSLENV.
+  # Default: $HOME/.pub-cache (Dart convention).
+  cache: /home/berial/.deps/pub
+
 workspace:
   # UNC prefix for WSL->Windows path translation.
   # e.g. /home/user/demo -> \\wsl.localhost\Ubuntu-24.04\home\user\demo

@@ -245,6 +245,14 @@ if ($wslChrome -and $wslChrome -match '^([A-Za-z]:[\\/])') {
     $wslChrome = ConvertTo-WslPath $wslChrome
 }
 
+# Resolve PUB_CACHE for WSL (flutter pub / dart pub package cache).
+# wsl.exe -e bypasses the shell, so .zshrc exports are invisible.
+$wslPubCache = $config.pub.cache
+if (-not $wslPubCache) { $wslPubCache = $env:PUB_CACHE }
+if ($wslPubCache -and $wslPubCache -match '^([A-Za-z]:[\\/])') {
+    $wslPubCache = ConvertTo-WslPath $wslPubCache
+}
+
 $winCwd = (Get-Location).Path
 $wslCwd = ConvertTo-WslPath $winCwd
 
@@ -292,6 +300,10 @@ if ($wslChrome) {
     $wslPsi.EnvironmentVariables['CHROME_EXECUTABLE'] = $wslChrome
     $wslenvParts += 'CHROME_EXECUTABLE/u'
 }
+if ($wslPubCache) {
+    $wslPsi.EnvironmentVariables['PUB_CACHE'] = $wslPubCache
+    $wslenvParts += 'PUB_CACHE/u'
+}
 if ($wslenvParts.Count -gt 0) {
     $existingWslenv = $wslPsi.EnvironmentVariables['WSLENV']
     $newWslenv = $wslenvParts -join ':'
@@ -304,6 +316,7 @@ if ($wslenvParts.Count -gt 0) {
 if ($wslAndroidSdk) { Write-Log "ANDROID_HOME=$wslAndroidSdk (via WSLENV)" }
 if ($wslJavaHome)   { Write-Log "JAVA_HOME=$wslJavaHome (via WSLENV)" }
 if ($wslChrome)     { Write-Log "CHROME_EXECUTABLE=$wslChrome (via WSLENV)" }
+if ($wslPubCache)   { Write-Log "PUB_CACHE=$wslPubCache (via WSLENV)" }
 
 $wslProc = New-Object System.Diagnostics.Process
 $wslProc.StartInfo = $wslPsi

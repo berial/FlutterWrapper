@@ -208,6 +208,14 @@ if ($wslChrome -and $wslChrome -match '^([A-Za-z]:[\\/])') {
     $wslChrome = ConvertTo-WslPath $wslChrome
 }
 
+# Resolve PUB_CACHE for WSL (flutter pub / dart pub package cache).
+# wsl.exe -e bypasses the shell, so .zshrc exports are invisible.
+$wslPubCache = $config.pub.cache
+if (-not $wslPubCache) { $wslPubCache = $env:PUB_CACHE }
+if ($wslPubCache -and $wslPubCache -match '^([A-Za-z]:[\\/])') {
+    $wslPubCache = ConvertTo-WslPath $wslPubCache
+}
+
 if (-not $distro -or -not $flutterExe) {
     Write-Error "FlutterWrapper: config missing 'wsl.distro' or 'flutter.executable'"
     exit 1
@@ -297,6 +305,10 @@ if ($isDaemon) {
     if ($wslChrome) {
         $psi.EnvironmentVariables['CHROME_EXECUTABLE'] = $wslChrome
         $wslenvParts += 'CHROME_EXECUTABLE/u'
+    }
+    if ($wslPubCache) {
+        $psi.EnvironmentVariables['PUB_CACHE'] = $wslPubCache
+        $wslenvParts += 'PUB_CACHE/u'
     }
     if ($wslenvParts.Count -gt 0) {
         $existingWslenv = $psi.EnvironmentVariables['WSLENV']
