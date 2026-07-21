@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['docs/**', '*.md']
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-powershell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: PowerShell syntax check
+        run: |
+          $scripts = Get-ChildItem -Recurse -Include *.ps1 -Path bin,lib,install.ps1 | Where-Object { $_.Name -ne 'daemon-direct-test.ps1' }
+          $errors = 0
+          foreach ($s in $scripts) {
+            $tokens = $null; $errs = $null
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($s.FullName, [ref]$tokens, [ref]$errs)
+            if ($errs.Count -gt 0) {
+              Write-Host "ERROR: $($s.Name)"
+              foreach ($e in $errs) { Write-Host "  $($e.Message)" }
+              $errors++
+            } else {
+              Write-Host "OK: $($s.Name)"
+            }
+          }
+          if ($errors -gt 0) { exit 1 }
+
+  lint-shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck
+        run: |
+          sh_files=$(find tools -name '*.sh' 2>/dev/null || true)
+          if [ -n "$sh_files" ]; then
+            sudo apt-get install -y shellcheck
+            shellcheck $sh_files
+          else
+            echo "No shell scripts to check"
+          fi
+
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify VERSION file
+        run: |
+          if [ ! -f VERSION ]; then
+            echo "ERROR: VERSION file missing"
+            exit 1
+          fi
+          echo "VERSION: $(cat VERSION)"

@@ -1,0 +1,25 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create release archive
+        run: |
+          VERSION=$(cat VERSION)
+          mkdir -p dist/FlutterWrapper-${VERSION}
+          cp -r bin lib tools docs install.ps1 VERSION LICENSE config.example.yaml dist/FlutterWrapper-${VERSION}/
+          # Remove development-only artifacts
+          rm -rf dist/FlutterWrapper-${VERSION}/tools/daemon-direct-test.ps1
+          cd dist && zip -r FlutterWrapper-${VERSION}.zip FlutterWrapper-${VERSION}/
+          echo "ARCHIVE=dist/FlutterWrapper-${VERSION}.zip" >> $GITHUB_ENV
+      - name: Upload Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/FlutterWrapper-*.zip
+          generate_release_notes: true
