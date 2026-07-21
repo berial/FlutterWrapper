@@ -256,6 +256,26 @@ if ($wslPubCache -and $wslPubCache -match '^([A-Za-z]:[\\/])') {
 $winCwd = (Get-Location).Path
 $wslCwd = ConvertTo-WslPath $winCwd
 
+# Before starting a new daemon, clean up any stale daemon that still holds
+# the TCP port (e.g. remnant from previous AS session or Flutter version).
+Write-Log "cleaning up stale daemon on port $tcpPort (if any)"
+$cleanupCmd = "fuser -k ${tcpPort}/tcp 2>/dev/null; sleep 1; exit 0"
+$cleanupPsi = New-Object System.Diagnostics.ProcessStartInfo
+$cleanupPsi.FileName = 'wsl.exe'
+$cleanupPsi.Arguments = "-d $distro -- bash -c `"$cleanupCmd`""
+$cleanupPsi.UseShellExecute = $false
+$cleanupPsi.RedirectStandardOutput = $true
+$cleanupPsi.RedirectStandardError = $true
+$cleanupPsi.CreateNoWindow = $true
+$cleanupPsi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+$cleanupProc = [System.Diagnostics.Process]::Start($cleanupPsi)
+$cleanupProc.WaitForExit(5000) | Out-Null
+if (-not $cleanupProc.HasExited) { try { $cleanupProc.Kill() } catch {} }
+$cleanupStdout = $cleanupProc.StandardOutput.ReadToEnd()
+$cleanupStderr = $cleanupProc.StandardError.ReadToEnd()
+if ($cleanupStdout.Trim()) { Write-Log "stale daemon killed: $($cleanupStdout.Trim())" }
+if ($cleanupStderr.Trim() -and $cleanupStderr.Trim() -notmatch '^$') { Write-Log "cleanup stderr: $($cleanupStderr.Trim())" }
+
 # Start wsl.exe daemon in TCP mode.
 # Use ProcessStartInfo with:
 #   - RedirectStandardInput=true  (PREVENT wsl.exe from inheriting wrapper's stdin
