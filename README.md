@@ -17,7 +17,7 @@ flutter.bat  ──>  flutter.ps1  ──>  wsl.exe  ──>  WSL 内 flutter
                    │  Windows 路径 → WSL 路径       │
                    │  返回值 → Windows 风格         │
                    ▼                              │
-                 logs/wrapper.log                ──┘
+                 logs/flutter.log                    ──┘
 ```
 
 ## 核心功能
@@ -29,9 +29,10 @@ flutter.bat  ──>  flutter.ps1  ──>  wsl.exe  ──>  WSL 内 flutter
 | **路径双向翻译** | 自动转换 cwd 和参数中的路径：`D:\foo` ↔ `/mnt/d/foo`、`\\wsl.localhost\Ubuntu-24.04\home\user` ↔ `/home/user` |
 | **daemon 模式翻译** | `flutter daemon` 走 TCP 9876 翻译器（两 Runspace 文本模式），对 `daemon.getSupportedPlatforms`、`device.startApp`、`app.start`、`app.debugPort` 等帧做路径字段翻译 |
 | **UTF-8 安全** | 全链路 UTF-8 编码，正确处理中文路径和 emoji |
-| **日志记录** | 所有命令的 cwd、原始命令、转换后命令、退出码、耗时写入 `logs/wrapper.log` |
+| **日志记录** | 所有命令按类型记录到独立日志：`logs/flutter.log`（普通命令）、`logs/dart.log`（dart 命令）、`logs/bridge.log`（daemon），含 cwd、命令、退出码、耗时 |
 | **配置文件** | 所有环境相关参数集中在 `config/wrapper.yaml`，修改后无需改脚本 |
-| **一键安装** | `install.ps1` 自动检测 WSL、Flutter、生成配置、创建 dart-sdk Junction、配置 WSL 路径符号链接、跑 smoke test |
+| **一键安装** | `install.ps1` 自动检测 WSL、Flutter（含 FVM 支持）、生成配置、创建 dart-sdk Junction、配置 WSL 路径符号链接、跑 smoke test。支持 `-Auto` 无交互模式 |
+| **诊断工具** | `flutter-wrapper doctor` 一键检查 12 大类（WSL、Flutter/Dart SDK、路径映射、daemon 翻译、Dart 分析层、Android SDK、Gradle 等），支持 `-quick` 和 `-json` 模式 |
 
 ## 目录结构
 
@@ -43,6 +44,8 @@ FlutterWrapper/
 │   ├── dart.bat                 # Dart 入口
 │   ├── dart.ps1                 # Dart 版本的 flutter.ps1
 │   ├── wrapper.ps1              # daemon 模式 TCP 翻译器
+│   ├── doctor.bat               # 诊断工具入口
+│   ├── doctor.ps1               # 12 大类系统诊断
 │   └── cache/
 │       ├── dart-sdk             # Junction → Windows 侧 dart-sdk（供 AS Dart 插件分析）
 │       └── flutter.version.json # flutter --version --machine 快照
@@ -52,7 +55,9 @@ FlutterWrapper/
 │   └── flutter/
 │       └── pubspec.yaml         # 占位 pubspec（满足 isFlutterSdkHome 检查）
 ├── logs/
-│   └── wrapper.log              # 命令日志
+│   ├── flutter.log              # 普通 Flutter 命令日志
+│   ├── dart.log                 # Dart 命令日志
+│   └── bridge.log               # daemon 翻译器日志
 ├── tools/
 │   ├── run-all-tests.ps1        # 完整测试矩阵（23 项）
 │   ├── daemon-test.ps1          # daemon.connected + daemon.version 测试
@@ -84,23 +89,32 @@ FlutterWrapper/
 在项目根目录执行：
 
 ```powershell
+# 交互式安装（会提示确认）
 powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
+
+# 无交互模式（CI/CD 友好，自动检测 Flutter/Dart/JDK/FVM）
+powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Auto
+
+# 跳过冒烟测试 + 指定发行版
+powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Auto -SkipSmoke -Distro Ubuntu-24.04
 ```
 
 安装脚本会自动：
 
 1. 检查 `wsl.exe` 和 `powershell.exe`
-2. 列出可用 WSL 发行版（自动选 `Ubuntu-24.04`，否则第一个）
-3. 在 WSL 中检测 Flutter 路径（`command -v flutter` → `~/.vfox/sdks/flutter/...` → 手动输入）
+2. 列出可用 WSL 发行版（自动选 `Ubuntu-24.04`，否则第一个；`-Distro` 参数覆盖）
+3. 在 WSL 中检测 Flutter 路径（`command -v flutter` → `~/.vfox/sdks/flutter/...` → FVM `~/fvm/`/`~/.fvm/versions/` → 交互询问或 -Auto 报错退出）
 4. 验证 `flutter --version` 能跑
-5. 推导 dart 可执行文件路径
+5. 推导 dart + JDK + Chrome 路径
 6. 检测 UNC 前缀（`\\wsl.localhost\<distro>`）和盘符挂载点（`/mnt`）
-7. **映射网络驱动器**（W: → `\\wsl.localhost\<distro>`，绕过 CMD 不支持 UNC cwd 的限制，见下方说明）
-8. **配置 WSL 路径符号链接**（需 sudo）：建 `/w:` 与 `/W:` → 根目录的符号链接，让 WSL 侧能解析 `package_config.json` 里的 `file:///w:/...` 路径（否则 web / WSL 内 run、build 报 `No such file`）。详见 [docs/troubleshooting-history.md Phase 8](../docs/troubleshooting-history.md)
+7. **映射网络驱动器**（W: → `\\wsl.localhost\<distro>`，绕过 CMD 不支持 UNC cwd 的限制）
+8. **配置 WSL 路径符号链接**（需 sudo）：建 `/w:` 与 `/W:` → 根目录的符号链接
 9. 生成 `config/wrapper.yaml`（含 `mappedDrive: W`）
-10. 创建 `bin/cache/dart-sdk` Junction（指向 Windows 侧的 dart-sdk，供 Dart 插件分析）
-11. 写 `bin/cache/flutter.version.json`
-12. 跑 smoke test：`flutter --version`
+10. 创建 `bin/cache/dart-sdk` Junction + `flutter.version.json`
+11. 创建 Android SDK build-tools Linux shell 包装器
+12. 禁用 Linux 桌面平台（WSL 无显示服务器）
+13. 跑 smoke test：`flutter --version`（可 `-SkipSmoke` 跳过）
+14. **-Auto 模式下自动运行 `flutter-wrapper doctor -quick` 做安装验证**
 
 ### ⚠️ 必须用映射盘符打开 WSL 项目
 
@@ -139,11 +153,17 @@ net use W: \\wsl.localhost\Ubuntu-24.04 /persistent:yes
 也可以在终端直接调用：
 
 ```powershell
+# Flutter 命令
 D:\Android\FlutterWrapper\bin\flutter.bat --version
 D:\Android\FlutterWrapper\bin\flutter.bat doctor
 D:\Android\FlutterWrapper\bin\flutter.bat devices
 D:\Android\FlutterWrapper\bin\flutter.bat pub get
 D:\Android\FlutterWrapper\bin\dart.bat analyze
+
+# 诊断工具
+D:\Android\FlutterWrapper\bin\doctor.bat           # 完整诊断
+D:\Android\FlutterWrapper\bin\doctor.bat -quick     # 快速诊断
+D:\Android\FlutterWrapper\bin\doctor.bat -json      # JSON 输出
 ```
 
 命令的实际执行位置是 WSL 内的 Flutter，所有输出（包括中文、emoji）都是 UTF-8。
@@ -261,15 +281,19 @@ AS stdout ← [Console]::Out    ─┘
 
 ## 日志
 
-所有命令记录到 `logs/wrapper.log`：
+命令按类型记录到三个独立日志文件：
 
-```
-[2026-07-17 16:55:49] exit=0 683.2228ms cwd=D:\Android\FlutterWrapper -> /mnt/d/Android/FlutterWrapper cmd=flutter --version
-[2026-07-17 23:32:09] [daemon] daemon started: pid=22684 cwd=D:\Android\FlutterWrapper -> /mnt/d/Android/FlutterWrapper
-[2026-07-20 09:36:08] [daemon] in  projectRoot: D:\Android\FlutterWrapper -> /mnt/d/Android/FlutterWrapper
-```
+| 日志文件 | 来源 | 内容 |
+|---------|------|------|
+| `logs/flutter.log` | `flutter.ps1` | 普通 Flutter 命令（doctor / pub / run / build） |
+| `logs/dart.log` | `dart.ps1` | Dart 命令（analyze / format / test） |
+| `logs/bridge.log` | `wrapper.ps1` | daemon 翻译器事件（帧翻译 / TCP 连接 / 进程生命周期） |
 
-包含时间戳、退出码、耗时、cwd 转换、原始命令、daemon 事件、路径翻译记录。
+日志格式：
+```
+[2026-07-21 11:40:15] exit=0 683.2ms cwd=D:\Android\FlutterWrapper -> /mnt/d/Android/FlutterWrapper cmd=flutter --version
+[2026-07-21 11:40:16] [daemon] in  projectRoot: D:\flutter_01 -> /mnt/d/flutter_01
+```
 
 ## 已知限制
 
@@ -341,11 +365,21 @@ FileSystemException: Exists failed, path = '\\\wsl.localhost\Ubuntu-24.04\home\b
 
 ## 故障排查
 
+### 首选：运行诊断工具
+
+遇到任何问题先执行：
+
+```powershell
+flutter-wrapper doctor
+```
+
+会检查 WSL 连通性、Flutter/Dart SDK、路径映射、daemon 翻译、Dart 分析层、Android SDK、Gradle 等 12 大类，失败项附带修复建议。
+
 ### `flutter --version` 卡住或无输出
 
 - 检查 `config/wrapper.yaml` 的 `wsl.distro` 和 `flutter.executable` 是否正确
 - 在 WSL 内手动跑 `<flutter-executable> --version` 验证
-- 查看 `logs/wrapper.log`
+- 查看 `logs/flutter.log`
 
 ### `No pubspec.yaml file found`（从 Android Studio 启动时）
 
@@ -374,7 +408,7 @@ FileSystemException: Exists failed, path = '\\\wsl.localhost\Ubuntu-24.04\home\b
 ### 路径翻译错误
 
 - 跑 `tools\path-convert-test.ps1` 验证规则
-- 查看 `logs/wrapper.log` 中的翻译记录
+- 查看 `logs/flutter.log`（如为 daemon 问题则看 `logs/bridge.log`）中的翻译记录
 
 ## 技术文档
 

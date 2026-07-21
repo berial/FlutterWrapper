@@ -738,38 +738,40 @@ FlutterWrapper Doctor
 | Dart Analysis Layer | ✅    |
 | Android Adapter     | ✅    |
 | Gradle Adapter      | ✅    |
-| Installer           | 部分完成 |
-| Doctor              | 待增强  |
+| Installer           | ✅    |
+| Doctor              | ✅    |
 
 ---
 
 # 16. 后续路线
 
-## v2.1
+## v2.1 ✅
 
 重点：
 
-* flutter-wrapper doctor
-* 自动诊断
-* 日志拆分
+* flutter-wrapper doctor ✅
+* 自动诊断 ✅
+* 日志拆分 ✅
 
 ---
 
-## v2.2
+## v2.2 ✅
 
 重点：
 
-* 自动发现 Flutter SDK
-* 自动生成配置
+* 自动发现 Flutter SDK ✅（install.ps1 -Auto）
+* 自动生成配置 ✅（Auto 模式全程无输入）
+* FVM 检测 ✅
 
 ---
 
-## v2.3
+## v2.3 ✅
 
 重点：
 
-* 多 WSL distro
-* FVM/Melos支持
+* 多 WSL distro ✅（doctor 列出 + config 切换）
+* FVM 支持 ✅（install + doctor 检测）
+* Melos 支持 ✅（WSL 侧 pub global activate 即工作，无需 wrapper 改动）
 
 ---
 
