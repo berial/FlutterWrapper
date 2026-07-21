@@ -568,6 +568,19 @@ if (-not (Test-Path $symlinkScript)) {
 }
 
 # ============================================================
+# Step 7d: Disable Linux desktop (WSL has no display for it)
+# ============================================================
+Write-Step "Disabling Linux desktop platform (WSL has no display)"
+
+$disableLinuxResult = & wsl.exe -d $distro -- bash -c "flutter config --no-enable-linux-desktop 2>&1"
+if ($LASTEXITCODE -eq 0) {
+    Write-OK "Linux desktop platform disabled"
+} else {
+    Write-Warn "Failed to disable Linux desktop platform (non-fatal)"
+    Write-Host ($disableLinuxResult -join "`n")
+}
+
+# ============================================================
 # Step 8: Smoke test
 # ============================================================
 Write-Step "Smoke test: flutter --version"
@@ -625,9 +638,13 @@ if ($mappedDrive) {
 } else {
     Write-Host "       (No drive letter mapped - UNC projects may fail to run)"
 }
-Write-Host "    5. Restart Android Studio"
-Write-Host ""
-Write-Host "    WSL path symlinks (package_config W: form) are now configured"
+    Write-Host "    5. Restart Android Studio"
+    Write-Host ""
+    Write-Host "    Notes:"
+    Write-Host "    - Linux desktop platform is disabled (WSL has no display). The run"
+    Write-Host "      dropdown will show Android / web devices only. To re-enable, run"
+    Write-Host "      'flutter config --enable-linux-desktop' in WSL."
+    Write-Host "    - WSL path symlinks (package_config W: form) are configured"
 Write-Host "    automatically during install, so WSL-side flutter run/build (incl."
 Write-Host "    web) can resolve dependency paths. If a sudo prompt was skipped or"
 Write-Host "    failed, re-run manually in WSL: bash tools/setup-wsl-symlink.sh"
