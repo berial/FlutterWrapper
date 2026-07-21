@@ -25,10 +25,10 @@ java:
   home: /home/berial/.vfox/sdks/java
 
 chrome:
-  # Path to Chrome/Edge executable for lutter run -d web-server / chrome.
-  # WSL has no Linux Chrome installed; point this to Windows Edge/Chrome
-  # (accessible via /mnt/c/...). Forwarded via WSLENV as CHROME_EXECUTABLE.
-  executable: /mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe
+  # Path to Chrome executable for flutter web device discovery.
+  # Chrome is installed directly in WSL (sudo apt install google-chrome-stable),
+  # so no /mnt/c/... Windows path conversion needed.
+  executable: /usr/bin/google-chrome
 
 workspace:
   # UNC prefix for WSL->Windows path translation.
