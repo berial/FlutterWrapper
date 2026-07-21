@@ -288,19 +288,26 @@ function Detect-Provider {
     # Check FVM (in WSL)
     if ($distro) {
         $fvmFound = $false
+        $fvmVersionsList = @()
         try {
-            $fvmVer = & wsl.exe -d $distro -e bash -lc "test -f ~/fvm/default/bin/flutter && echo 'default' || true" 2>$null
-            if ($fvmVer.Trim()) { $fvmFound = $true }
+            $fvmDefault = & wsl.exe -d $distro -e bash -lc "test -f ~/fvm/default/bin/flutter && echo 'default' || true" 2>$null
+            if ($fvmDefault.Trim()) { $fvmFound = $true; $fvmVersionsList += 'default' }
         } catch {}
-        if (-not $fvmFound) {
-            try {
-                $fvmVersions = & wsl.exe -d $distro -e bash -lc 'ls -1d ~/.fvm/versions/*/bin/flutter 2>/dev/null | head -1 || true' 2>$null
-                if ($fvmVersions.Trim()) { $fvmFound = $true }
-            } catch {}
-        }
+        try {
+            $fvmVerDirs = & wsl.exe -d $distro -e bash -lc 'ls -1d ~/.fvm/versions/*/bin/flutter 2>/dev/null | sed "s|/bin/flutter||;s|.*/||" || true' 2>$null
+            if ($fvmVerDirs) {
+                foreach ($v in $fvmVerDirs) { if ($v.Trim()) { $fvmFound = $true; $fvmVersionsList += $v.Trim() } }
+            }
+        } catch {}
         if ($fvmFound) {
             Write-Host "  ✓ FVM" -ForegroundColor Green
-            Write-Host "    Installed versions detected" -ForegroundColor Gray
+            Write-Host "    Versions: $($fvmVersionsList -join ', ')" -ForegroundColor Gray
+            # FVM global version
+            try {
+                $fvmGlobalVer = & wsl.exe -d $distro -e bash -lc 'fvm global 2>/dev/null || fvm list 2>/dev/null | grep -m1 "^[✓*]" | sed "s/[✓*] //;s/ .*//" || true' 2>$null
+                $fvmGlobalVer = ($fvmGlobalVer -join '').Trim()
+                if ($fvmGlobalVer) { Write-Host "    Global: $fvmGlobalVer" -ForegroundColor Gray }
+            } catch {}
         } else {
             Write-Host "  ✗ FVM" -ForegroundColor DarkGray
         }
@@ -392,7 +399,32 @@ function Show-Version {
 # ============================================================
 function Invoke-FlutterCurrent {
     Require-Config
-    # Try vfox first
+    $winCwd = (Get-Location).Path
+    
+    # 1. Check project-level config first
+    $fvmrc = Join-Path $winCwd '.fvmrc'
+    $vfoxToml = Join-Path $winCwd '.vfox.toml'
+    
+    if (Test-Path $fvmrc) {
+        $fvmContent = Get-Content $fvmrc -Raw -Encoding UTF8
+        if ($fvmContent -match '"flutter"\s*:\s*"([^"]+)"' -or $fvmContent -match '"flutterSdkVersion"\s*:\s*"([^"]+)"') {
+            Write-Host "Flutter $($Matches[1]) (FVM, project .fvmrc)" -ForegroundColor Green
+        } else {
+            Write-Host "FVM project (.fvmrc found, version auto-detected)" -ForegroundColor Green
+        }
+        return
+    }
+    if (Test-Path $vfoxToml) {
+        $tomlContent = Get-Content $vfoxToml -Raw -Encoding UTF8
+        if ($tomlContent -match 'flutter\s*=\s*"([^"]+)"') {
+            Write-Host "Flutter $($Matches[1]) (vfox, project .vfox.toml)" -ForegroundColor Green
+        } else {
+            Write-Host "vfox project (.vfox.toml found)" -ForegroundColor Green
+        }
+        return
+    }
+    
+    # 2. Try vfox global
     $vfoxExe = Get-Command vfox -ErrorAction SilentlyContinue
     if ($vfoxExe) {
         $out = & vfox current flutter 2>$null
@@ -401,9 +433,22 @@ function Invoke-FlutterCurrent {
             return
         }
     }
-    # Fallback: read from wrapper.yaml
+    
+    # 3. Try FVM global
+    if ($distro) {
+        try {
+            $fvmGlobal = & wsl.exe -d $distro -e bash -lc 'fvm flutter --version 2>/dev/null | head -1 || fvm list 2>/dev/null | grep -m1 "^[*✓]" | sed "s/[*✓] //;s/ .*//" || true' 2>$null
+            $fvmGlobal = ($fvmGlobal -join '').Trim()
+            if ($fvmGlobal) {
+                Write-Host "Flutter $fvmGlobal (FVM, global)" -ForegroundColor Green
+                return
+            }
+        } catch {}
+    }
+    
+    # 4. Fallback: read from wrapper.yaml
     if ($config.flutter.executable) {
-        Write-Host "Flutter (manual): $($config.flutter.executable)"
+        Write-Host "Flutter (manual/config): $($config.flutter.executable)" -ForegroundColor Yellow
     } else {
         Write-Err "No Flutter SDK configured"
     }
@@ -417,18 +462,56 @@ function Invoke-FlutterUse {
         exit 1
     }
     Require-Config
-    # Route to vfox
+    $winCwd = (Get-Location).Path
+    
+    # 1. Project-level: .fvmrc → fvm use (project)
+    if (Test-Path (Join-Path $winCwd '.fvmrc')) {
+        if ($distro) {
+            Write-Host "Routing to FVM: fvm use $Version (project .fvmrc)" -ForegroundColor Cyan
+            & wsl.exe -d $distro --cd (ConvertTo-WslPathSimple $winCwd) -e bash -lc "fvm use $Version"
+            if ($LASTEXITCODE -eq 0) {
+                Write-OK "Switched project to Flutter $Version (via FVM)"
+                return
+            }
+        }
+    }
+    
+    # 2. Project-level: .vfox.toml → vfox use -p
+    if (Test-Path (Join-Path $winCwd '.vfox.toml')) {
+        $vfoxExe = Get-Command vfox -ErrorAction SilentlyContinue
+        if ($vfoxExe) {
+            Write-Host "Routing to vfox: vfox use -p flutter@$Version (project .vfox.toml)" -ForegroundColor Cyan
+            & vfox use -p flutter@$Version
+            if ($LASTEXITCODE -eq 0) {
+                Write-OK "Switched project to Flutter $Version (via vfox)"
+                return
+            }
+        }
+    }
+    
+    # 3. Global: try vfox first, then FVM
     $vfoxExe = Get-Command vfox -ErrorAction SilentlyContinue
     if ($vfoxExe) {
-        Write-Host "Routing to vfox: vfox use -g flutter@$Version"
+        Write-Host "Routing to vfox: vfox use -g flutter@$Version" -ForegroundColor Cyan
         & vfox use -g flutter@$Version
         if ($LASTEXITCODE -eq 0) {
-            Write-OK "Switched Flutter to $Version (via vfox)"
+            Write-OK "Switched global Flutter to $Version (via vfox)"
             Write-Host "  Note: Restart Android Studio for Dart plugin to pick up the change." -ForegroundColor Yellow
+            return
         }
-    } else {
-        Write-Err "vfox not found. Install vfox or manually update wrapper.yaml."
     }
+    
+    # 4. Global FVM
+    if ($distro) {
+        Write-Host "Routing to FVM: fvm global $Version" -ForegroundColor Cyan
+        & wsl.exe -d $distro -e bash -lc "fvm global $Version"
+        if ($LASTEXITCODE -eq 0) {
+            Write-OK "Switched global Flutter to $Version (via FVM)"
+            return
+        }
+    }
+    
+    Write-Err "No SDK provider found. Install vfox or FVM in WSL."
 }
 
 # ============================================================
