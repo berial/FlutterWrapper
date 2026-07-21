@@ -1,6 +1,7 @@
 # FlutterWrapper
 
-> 让 Android Studio 在 Windows 上使用 WSL 内的 Flutter SDK，而无需在 Windows 侧安装 Flutter。
+> Windows Android Studio + WSL Flutter 兼容编排层 (Compatibility Orchestration Layer)
+> v3.0 — 让 Windows IDE 与 WSL Flutter 工具链无缝协作，并提供诊断、修复、版本管理对接能力。
 
 ## 项目目的
 
@@ -32,7 +33,10 @@ flutter.bat  ──>  flutter.ps1  ──>  wsl.exe  ──>  WSL 内 flutter
 | **日志记录** | 所有命令按类型记录到独立日志：`logs/flutter.log`（普通命令）、`logs/dart.log`（dart 命令）、`logs/bridge.log`（daemon），含 cwd、命令、退出码、耗时 |
 | **配置文件** | 所有环境相关参数集中在 `config/wrapper.yaml`，修改后无需改脚本 |
 | **一键安装** | `install.ps1` 自动检测 WSL、Flutter（含 FVM 支持）、生成配置、创建 dart-sdk Junction、配置 WSL 路径符号链接、跑 smoke test。支持 `-Auto` 无交互模式 |
-| **诊断工具** | `flutter-wrapper doctor` 一键检查 12 大类（WSL、Flutter/Dart SDK、路径映射、daemon 翻译、Dart 分析层、Android SDK、Gradle 等），支持 `-quick` 和 `-json` 模式 |
+| **诊断工具** | `fw doctor` 一键检查 13 大类（WSL、Flutter/Dart SDK、路径映射、daemon 翻译、Dart 分析层、Android SDK、Gradle、项目 `.vfox.toml`/`.fvmrc` 配置等），支持 `--quick`、`--json`、`--fix-safe` |
+| **自动修复** | `fw repair <模块>` 7 个修复模块：`package-config`、`dart-sdk`、`symlinks`、`config`、`vfox`、`daemon`、`cache`。全部幂等安全 |
+| **Provider 对接** | `fw provider` 检测 vfox / FVM 状态；`fw flutter current` / `fw flutter use` 代理版本管理，不替代而是打通已有工具 |
+| **统一 CLI** | `fw` 命令统一入口：`fw doctor`、`fw repair`、`fw provider`、`fw status`、`fw setup`、`fw version` |
 
 ## 目录结构
 
@@ -45,7 +49,9 @@ FlutterWrapper/
 │   ├── dart.ps1                 # Dart 版本的 flutter.ps1
 │   ├── wrapper.ps1              # daemon 模式 TCP 翻译器
 │   ├── doctor.bat               # 诊断工具入口
-│   ├── doctor.ps1               # 12 大类系统诊断
+│   ├── doctor.ps1               # 13 大类系统诊断
+│   ├── fw.bat                   # v3 统一 CLI 入口
+│   ├── fw.ps1                   # CLI 路由器 + Repair 引擎 + Provider 适配
 │   └── cache/
 │       ├── dart-sdk             # Junction → Windows 侧 dart-sdk（供 AS Dart 插件分析）
 │       └── flutter.version.json # flutter --version --machine 快照
@@ -153,17 +159,20 @@ net use W: \\wsl.localhost\Ubuntu-24.04 /persistent:yes
 也可以在终端直接调用：
 
 ```powershell
-# Flutter 命令
+# === fw 统一 CLI (v3) ===
+fw doctor                 # 完整诊断（13 大类 + 项目配置检测）
+fw doctor --fix-safe      # 诊断 + 自动修复安全项
+fw repair dart-sdk        # 修复特定模块
+fw repair --list          # 列出所有修复模块
+fw provider               # 查看 SDK 管理器 (vfox/FVM)
+fw flutter current        # 当前 Flutter 版本
+fw flutter use 3.44.6     # 切换版本 (路由到 vfox)
+fw status                 # 快速状态摘要
+
+# === Flutter / Dart 命令 ===
 D:\Android\FlutterWrapper\bin\flutter.bat --version
-D:\Android\FlutterWrapper\bin\flutter.bat doctor
-D:\Android\FlutterWrapper\bin\flutter.bat devices
 D:\Android\FlutterWrapper\bin\flutter.bat pub get
 D:\Android\FlutterWrapper\bin\dart.bat analyze
-
-# 诊断工具
-D:\Android\FlutterWrapper\bin\doctor.bat           # 完整诊断
-D:\Android\FlutterWrapper\bin\doctor.bat -quick     # 快速诊断
-D:\Android\FlutterWrapper\bin\doctor.bat -json      # JSON 输出
 ```
 
 命令的实际执行位置是 WSL 内的 Flutter，所有输出（包括中文、emoji）都是 UTF-8。
@@ -367,13 +376,23 @@ FileSystemException: Exists failed, path = '\\\wsl.localhost\Ubuntu-24.04\home\b
 
 ### 首选：运行诊断工具
 
-遇到任何问题先执行：
-
 ```powershell
-flutter-wrapper doctor
+fw doctor                 # 完整诊断，13 大类
+fw doctor --fix-safe      # 诊断 + 自动修复安全项（Junction、符号链接等）
 ```
 
-会检查 WSL 连通性、Flutter/Dart SDK、路径映射、daemon 翻译、Dart 分析层、Android SDK、Gradle 等 12 大类，失败项附带修复建议。
+会检查 WSL 连通性、Flutter/Dart SDK、路径映射、daemon 翻译、Dart 分析层、Android SDK、Gradle、项目 `.vfox.toml`/`.fvmrc` 配置等，失败项附带修复建议。
+
+### 常见修复
+
+```powershell
+fw repair dart-sdk        # 重建 bin/cache/dart-sdk Junction
+fw repair symlinks        # 重建 WSL 符号链接
+fw repair package-config  # 修复 package_config.json 路径
+fw repair daemon          # 清理残留 daemon 进程
+fw repair cache           # 清理构建缓存
+fw repair --list          # 查看全部修复模块
+```
 
 ### `flutter --version` 卡住或无输出
 
@@ -412,6 +431,8 @@ flutter-wrapper doctor
 
 ## 技术文档
 
+- [docs/new_target_v3.md](docs/new_target_v3.md) - **v3 架构：Compatibility Orchestration Layer**
+- [docs/new_target_v2.md](docs/new_target_v2.md) - v2 架构规范（已全部实现）
 - [docs/architecture.md](docs/architecture.md) - 整体架构
 - [docs/sdk-layout.md](docs/sdk-layout.md) - SDK 目录结构模拟
 - [docs/flutter-plugin.md](docs/flutter-plugin.md) - AS Flutter 插件调用方式
