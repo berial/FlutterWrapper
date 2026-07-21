@@ -21,6 +21,17 @@ $quick = $args -contains '-quick' -or $args -contains '-q'
 $jsonOut = $args -contains '-json' -or $args -contains '-j'
 $fixSafe = $args -contains '--fix-safe'
 
+# Dynamic WSL user detection (for de-personalized checks)
+$wslUser = $null
+$wslHome = $null
+try {
+    if ($config -and $config.wsl.distro) {
+        $wslUser = (& wsl.exe -d $($config.wsl.distro) -e bash -lc 'whoami' 2>$null).Trim()
+        if ($wslUser) { $wslHome = "/home/$wslUser" }
+    }
+} catch {}
+if (-not $wslHome) { $wslHome = '/home/user' }
+
 # ============================================================
 # Output helpers
 # ============================================================
@@ -346,12 +357,12 @@ $testCases = @(
 
 # UNC test (from uncPrefix)
 if ($uncPrefix) {
-    $testCases += @{ Input = "$uncPrefix\home\berial\test"; Expected = "/home/berial/test"; Name = 'UNC -> WSL' }
+    $testCases += @{ Input = "$uncPrefix$wslHome\test" -replace '/', '\'; Expected = "$wslHome/test"; Name = 'UNC -> WSL' }
 }
 
 # Mapped drive test
 if ($mappedDrive) {
-    $testCases += @{ Input = "$($mappedDrive):\home\berial\test"; Expected = "/home/berial/test"; Name = 'Mapped drive -> WSL' }
+    $testCases += @{ Input = "$($mappedDrive):$wslHome\test" -replace '/', '\'; Expected = "$wslHome/test"; Name = 'Mapped drive -> WSL' }
 }
 
 $pathOk = $true
@@ -621,7 +632,7 @@ if ($javaHome) {
 
 # Check Gradle mirror
 try {
-    $mirrorPath = '/home/berial/.gradle/init.d/mirror.gradle'
+    $mirrorPath = "$wslHome/.gradle/init.d/mirror.gradle"
     $mirrorCheck = & wsl.exe -d $distro -e bash -lc "test -f `"$mirrorPath`" && echo OK || echo MISSING" 2>$null
     $mirrorCheck = ($mirrorCheck -join '').Trim()
     if ($mirrorCheck -eq 'OK') {
@@ -679,7 +690,7 @@ Write-Section "12. Smoke Test"
 if (-not $quick -and $distro -and $flutterExe) {
     try {
         Write-Host "  Running: flutter doctor --android-licenses (quiet)..."
-        $smoke = & wsl.exe -d $distro --cd /home/berial -e $flutterExe doctor 2>&1
+        $smoke = & wsl.exe -d $distro --cd $wslHome -e $flutterExe doctor 2>&1
         $smokeLines = $smoke | Where-Object { $_ -match '^\[[✓✗!?]\]' }
         $okCount = ($smokeLines | Where-Object { $_ -match '^\[✓\]' }).Count
         $failCount = ($smokeLines | Where-Object { $_ -match '^\[✗\]' }).Count
