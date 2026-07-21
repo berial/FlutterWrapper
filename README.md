@@ -70,6 +70,14 @@ fw status                 # quick summary
 | **Split logging** | `logs/flutter.log` / `dart.log` / `bridge.log` by command type |
 | **UTF-8 safe** | Full chain UTF-8, handles CJK paths and emoji |
 
+## What's New in v3.1
+
+- **Modular doctor**: `lib/doctor/check-*.ps1` — 13 check categories in 4 focused modules
+- **Provider adapters**: `lib/providers/vfox.ps1` + `fvm.ps1` — plugin architecture for SDK managers
+- **Diagnostic reports**: `fw doctor --collect` generates `flutterwrapper-report.zip` for GitHub issues
+- **CI pipeline**: PowerShell syntax check, ShellCheck, smoke test on every push
+- **VERSION file**: single source of truth, read by all scripts
+
 ## Support Matrix
 
 | Component | Supported |
