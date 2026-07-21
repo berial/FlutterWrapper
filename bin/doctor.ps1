@@ -19,6 +19,7 @@ $configPath = Join-Path $rootDir 'config\wrapper.yaml'
 
 $quick = $args -contains '-quick' -or $args -contains '-q'
 $jsonOut = $args -contains '-json' -or $args -contains '-j'
+$fixSafe = $args -contains '--fix-safe'
 
 # ============================================================
 # Output helpers
@@ -700,6 +701,94 @@ if (-not $quick -and $distro -and $flutterExe) {
 }
 
 # ============================================================
+# Check 13: Project config (.vfox.toml / .fvmrc) — v3.0
+# ============================================================
+Write-Section "13. Project Config (vfox/FVM)"
+
+$winCwd = (Get-Location).Path
+$vfoxToml = Join-Path $winCwd '.vfox.toml'
+$fvmrc = Join-Path $winCwd '.fvmrc'
+
+if (Test-Path $vfoxToml) {
+    Write-Check ".vfox.toml" 'PASS' "Found in project"
+    try {
+        $tomlContent = Get-Content $vfoxToml -Raw -Encoding UTF8
+        if ($tomlContent -match 'flutter\s*=\s*"([^"]+)"') {
+            $projectVer = $Matches[1]
+            # Check if this version is installed in vfox
+            $vfoxInstalled = $false
+            try {
+                $vfoxList = & vfox list flutter 2>$null
+                if (($vfoxList -join "`n") -match [regex]::Escape($projectVer)) {
+                    $vfoxInstalled = $true
+                }
+            } catch {}
+            if ($vfoxInstalled) {
+                Write-Check "  Flutter $projectVer" 'PASS' "Installed via vfox"
+            } else {
+                Write-Check "  Flutter $projectVer" 'WARN' `
+                    "Not installed in vfox" `
+                    "Run: vfox install flutter@$projectVer"
+            }
+        } else {
+            Write-Check "  Flutter version" 'WARN' "Could not parse version from .vfox.toml"
+        }
+    } catch {
+        Write-Check ".vfox.toml" 'WARN' "Could not parse: $($_.Exception.Message)"
+    }
+} else {
+    Write-Check ".vfox.toml" 'SKIP' "Not found (project may use FVM or manual)"
+}
+
+if (Test-Path $fvmrc) {
+    Write-Check ".fvmrc" 'PASS' "Found in project"
+    try {
+        $fvmContent = Get-Content $fvmrc -Raw -Encoding UTF8
+        if ($fvmContent -match '"flutter"\s*:\s*"([^"]+)"' -or $fvmContent -match '"flutterSdkVersion"\s*:\s*"([^"]+)"') {
+            $fvmVer = $Matches[1]
+            $fvmInstalled = $false
+            try {
+                $fvmCheck = & wsl.exe -d $distro -e bash -lc "test -d ~/.fvm/versions/$fvmVer && echo OK || echo MISSING" 2>$null
+                if (($fvmCheck -join '').Trim() -eq 'OK') { $fvmInstalled = $true }
+            } catch {}
+            if ($fvmInstalled) {
+                Write-Check "  Flutter $fvmVer" 'PASS' "Installed via FVM"
+            } else {
+                Write-Check "  Flutter $fvmVer" 'WARN' `
+                    "Not installed in FVM" `
+                    "Run: fvm install $fvmVer"
+            }
+        } else {
+            Write-Check "  Flutter version" 'WARN' "Could not parse version from .fvmrc"
+        }
+    } catch {
+        Write-Check ".fvmrc" 'WARN' "Could not parse: $($_.Exception.Message)"
+    }
+} else {
+    Write-Check ".fvmrc" 'SKIP' "Not found"
+}
+
+# Version consistency: compare project config with wrapper config
+if ((Test-Path $vfoxToml) -or (Test-Path $fvmrc)) {
+    if ($flutterExe -and $distro) {
+        try {
+            $actualVer = & wsl.exe -d $distro -e $flutterExe --version 2>$null | Select-Object -First 1
+            if ($actualVer -match 'Flutter\s+([\d.]+)') {
+                $actualFlutterVer = $Matches[1]
+                $projectVerDeclared = if ($projectVer) { $projectVer } else { $fvmVer }
+                if ($projectVerDeclared -and $actualFlutterVer -ne $projectVerDeclared) {
+                    Write-Check "  Version consistency" 'WARN' `
+                        "Project declares $projectVerDeclared, but wrapper uses Flutter $actualFlutterVer" `
+                        "Run: fw flutter use $projectVerDeclared"
+                } elseif ($projectVerDeclared) {
+                    Write-Check "  Version consistency" 'PASS' "Wrapper Flutter $actualFlutterVer matches project"
+                }
+            }
+        } catch {}
+    }
+}
+
+# ============================================================
 # Summary
 # ============================================================
 Write-Section "Summary"
@@ -732,6 +821,66 @@ if ($jsonOut) {
         Write-Host ""
         Write-Host "  All checks passed with $warnCount warning(s). Wrapper should work." -ForegroundColor Yellow
     }
+}
+
+# --fix-safe: auto-repair safe items
+if ($fixSafe -and $issueCount -gt 0) {
+    Write-Host ""
+    Write-Host "--fix-safe: Repairing safe items..." -ForegroundColor Cyan
+    $safeRepairs = @()
+    # dart-sdk junction repair
+    $dartSdkFail = $results | Where-Object { $_.name -eq 'dart-sdk Junction' -and $_.status -eq 'FAIL' }
+    if ($dartSdkFail) {
+        Write-Host "  Repairing: dart-sdk Junction..."
+        $dartSdkLink = Join-Path $rootDir 'bin\cache\dart-sdk'
+        $vfoxDartSdk = Join-Path $env:USERPROFILE 'vfox-global\flutter\bin\cache\dart-sdk'
+        if (Test-Path $vfoxDartSdk) {
+            if (Test-Path $dartSdkLink) { Remove-Item $dartSdkLink -Force -Recurse -ErrorAction SilentlyContinue }
+            $cacheDir = Split-Path -Parent $dartSdkLink
+            if (-not (Test-Path $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null }
+            cmd /c mklink /J "$dartSdkLink" "$vfoxDartSdk" 2>&1 | Out-Null
+            if (Test-Path $dartSdkLink) {
+                Write-Host "    [OK] Junction re-created" -ForegroundColor Green
+            } else {
+                Write-Host "    [FAIL] Could not create Junction" -ForegroundColor Red
+            }
+        }
+    }
+    # vfox Junction workaround
+    $vfoxFail = $results | Where-Object { $_.name -eq 'vfox Windows global flutter' -and $_.status -eq 'WARN' } | Select-Object -First 1
+    $vfoxGlobalFlutter = Join-Path $env:USERPROFILE 'vfox-global\flutter'
+    if (-not (Test-Path $vfoxGlobalFlutter)) {
+        Write-Host "  Repairing: vfox global Junction..."
+        $vfoxTarget = Join-Path $env:USERPROFILE '.version-fox\sdks\flutter'
+        if (Test-Path $vfoxTarget) {
+            $vfoxGlobalDir = Join-Path $env:USERPROFILE 'vfox-global'
+            if (-not (Test-Path $vfoxGlobalDir)) { New-Item -ItemType Directory -Path $vfoxGlobalDir -Force | Out-Null }
+            New-Item -ItemType Junction -Path $vfoxGlobalFlutter -Target $vfoxTarget -Force | Out-Null
+            if (Test-Path $vfoxGlobalFlutter) {
+                Write-Host "    [OK] Junction created: $vfoxGlobalFlutter" -ForegroundColor Green
+            }
+        }
+    }
+    # WSL symlinks
+    $symFail = $results | Where-Object { $_.status -eq 'FAIL' -and $_.name -match '/w:|/W:|/blaze-out' }
+    if ($symFail) {
+        Write-Host "  Repairing: WSL symlinks (may need sudo)..."
+        $symScript = Join-Path $rootDir 'tools\setup-wsl-symlink.sh'
+        if (Test-Path $symScript) {
+            $sDrive = $symScript.Substring(0,1).ToLower()
+            $sRest = $symScript.Substring(2) -replace '\\', '/'
+            $wslScript = "/mnt/$sDrive$sRest"
+            $symDrive = if ($config.workspace.mappedDrive) { $config.workspace.mappedDrive } else { 'W' }
+            $symResult = & wsl.exe -d $distro -e bash -c "sudo bash $wslScript $distro $symDrive 2>&1"
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "    [OK] Symlinks repaired" -ForegroundColor Green
+            } else {
+                Write-Host "    [WARN] May need manual run" -ForegroundColor Yellow
+            }
+        }
+    }
+    Write-Host ""
+    Write-Host "  Re-run 'fw doctor' to verify repairs." -ForegroundColor Gray
 }
 
 exit $issueCount
