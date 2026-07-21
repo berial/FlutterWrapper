@@ -37,11 +37,27 @@ jobs:
         run: |
           sh_files=$(find tools -name '*.sh' 2>/dev/null || true)
           if [ -n "$sh_files" ]; then
-            shellcheck --severity=error $sh_files || true
-            echo "ShellCheck done (warnings/info are non-fatal)"
+            shellcheck --severity=error $sh_files
+            echo "ShellCheck done"
           else
             echo "No shell scripts to check"
           fi
+
+  smoke-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Smoke test (config parse + fw version)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . "$env:GITHUB_WORKSPACE\lib\config.ps1"
+          $v = Get-WrapperVersion $env:GITHUB_WORKSPACE
+          Write-Host "Version: $v"
+          if (-not $v) { exit 1 }
+          # Verify config.example.yaml parses
+          $cfg = Read-WrapperConfigSafe "$env:GITHUB_WORKSPACE\config.example.yaml"
+          if (-not $cfg) { throw 'config.example.yaml failed to parse' }
+          Write-Host "Config parse OK, distro=$($cfg.wsl.distro)"
 
   check-version:
     runs-on: ubuntu-latest
