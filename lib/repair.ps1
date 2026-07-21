@@ -38,7 +38,7 @@ function Repair-PackageConfig {
             }
             $content = [System.Text.Encoding]::UTF8.GetString($bytes)
             $mappedDrive = if ($config.workspace.mappedDrive) { $config.workspace.mappedDrive.ToLower() } else { 'w' }
-            $translated = $content -replace 'file:///(?!/wsl\.|/W:/|/w:/)', "file:///$mappedDrive:/"
+            $translated = $content -replace 'file:///(?!/wsl\.|/W:/|/w:/)', "file:///$($mappedDrive):/"
             $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
             [System.IO.File]::WriteAllText($pkgConfig, $translated, $utf8NoBom)
             Write-OK "package_config.json translated to $($mappedDrive): form"

@@ -354,9 +354,9 @@ foreach ($tc in $testCases) {
 if ($mappedDrive) {
     $wDrivePath = "${mappedDrive}:\"
     if (Test-Path $wDrivePath) {
-        Write-Check "Mapped drive ($mappedDrive:)" 'PASS' "Accessible"
+        Write-Check "Mapped drive ($($mappedDrive):)" 'PASS' "Accessible"
     } else {
-        Write-Check "Mapped drive ($mappedDrive:)" 'FAIL' `
+        Write-Check "Mapped drive ($($mappedDrive):)" 'FAIL' `
             "${mappedDrive}: not accessible" `
             "Run: net use ${mappedDrive}: \\wsl.localhost\$distro"
     }

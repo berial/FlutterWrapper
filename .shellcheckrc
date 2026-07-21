@@ -1,0 +1,3 @@
+# Only fail on errors, not warnings or info. tools/ scripts are
+# personal maintenance scripts, not shipped user-facing tools.
+severity=error
