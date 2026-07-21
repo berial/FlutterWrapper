@@ -13,7 +13,7 @@ $ErrorActionPreference = 'Stop'
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $rootDir   = Split-Path -Parent $scriptDir
 $configPath = Join-Path $rootDir 'config\wrapper.yaml'
-$logPath    = Join-Path $rootDir 'logs\wrapper.log'
+$logPath    = Join-Path $rootDir 'logs\flutter.log'
 
 # ============================================================
 # Minimal YAML parser (supports 2-level nesting, key: value only)

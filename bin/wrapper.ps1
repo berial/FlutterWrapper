@@ -23,7 +23,7 @@ $ErrorActionPreference = 'Stop'
 $scriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $rootDir    = Split-Path -Parent $scriptDir
 $configPath = Join-Path $rootDir 'config\wrapper.yaml'
-$logPath    = Join-Path $rootDir 'logs\wrapper.log'
+$logPath    = Join-Path $rootDir 'logs\bridge.log'
 
 # ============================================================
 # YAML parser (shared with flutter.ps1)
