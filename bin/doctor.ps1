@@ -13,6 +13,7 @@ $configPath = Join-Path $rootDir 'config\wrapper.yaml'
 $quick = $args -contains '-quick' -or $args -contains '-q'
 $jsonOut = $args -contains '-json' -or $args -contains '-j'
 $fixSafe = $args -contains '--fix-safe'
+$collect = $args -contains '--collect'
 
 # Dynamic WSL user detection (for de-personalized checks)
 $wslUser = $null
@@ -857,6 +858,53 @@ if ($fixSafe -and $issueCount -gt 0) {
     }
     Write-Host ""
     Write-Host "  Re-run 'fw doctor' to verify repairs." -ForegroundColor Gray
+}
+
+# --collect: generate diagnostic report zip
+if ($collect) {
+    Write-Host ""
+    Write-Host "Generating diagnostic report..." -ForegroundColor Cyan
+    $tmpDir = Join-Path $env:TEMP "flutterwrapper-report"
+    if (Test-Path $tmpDir) { Remove-Item $tmpDir -Force -Recurse -ErrorAction SilentlyContinue }
+    New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+    # doctor.json
+    $output = @{ results = $results; summary = @{ passed = ($results | Where-Object { $_.status -eq 'PASS' }).Count; failed = $issueCount; warnings = $warnCount; total = $results.Count } }
+    $json | Out-File -FilePath (Join-Path $tmpDir 'doctor.json') -Encoding UTF8
+    # config (anonymized — strip executable paths)
+    if ($config) {
+        $safeConfig = $config.Clone()
+        if ($safeConfig.flutter) { $safeConfig.flutter.executable = '[REDACTED]' }
+        if ($safeConfig.dart) { $safeConfig.dart.executable = '[REDACTED]' }
+        if ($safeConfig.java) { $safeConfig.java.home = '[REDACTED]' }
+        ($safeConfig | ConvertTo-Json -Depth 3) | Out-File -FilePath (Join-Path $tmpDir 'config.json') -Encoding UTF8
+    }
+    # logs (last 100 lines each, truncated for privacy)
+    foreach ($logName in @('flutter', 'dart', 'bridge')) {
+        $logFile = Join-Path $rootDir "logs\$logName.log"
+        if (Test-Path $logFile) {
+            $lines = Get-Content $logFile -Tail 100
+            # Redact user paths
+            $redacted = $lines -replace '/home/\w+/', '/home/<user>/' -replace 'cwd=[A-Za-z]:[^ ]+', 'cwd=[REDACTED]'
+            $redacted | Out-File -FilePath (Join-Path $tmpDir "$logName.log") -Encoding UTF8
+        }
+    }
+    # environment summary
+    $envInfo = @"
+Windows: $([Environment]::OSVersion.VersionString)
+WSL Distro: $distro
+Flutter Provider: $(if (Get-Command vfox -ErrorAction SilentlyContinue) { 'vfox' } elseif ($distro) { 'FVM/manual' } else { 'unknown' })
+Flutter Executable: $($config.flutter.executable)
+Config Path: $configPath
+"@
+    $envInfo | Out-File -FilePath (Join-Path $tmpDir 'environment.txt') -Encoding UTF8
+    # zip
+    $zipPath = Join-Path (Get-Location).Path 'flutterwrapper-report.zip'
+    if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::CreateFromDirectory($tmpDir, $zipPath)
+    Remove-Item $tmpDir -Force -Recurse -ErrorAction SilentlyContinue
+    Write-OK "Report saved: $zipPath"
+    Write-Host "  Attach this file when submitting GitHub issues." -ForegroundColor Gray
 }
 
 exit $issueCount
