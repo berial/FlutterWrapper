@@ -1,15 +1,34 @@
 # install.ps1 - FlutterWrapper installer
 #
-# Phase 10: One-shot setup script. Checks prerequisites, generates
+# Phase 10 / v2.2: One-shot setup script. Checks prerequisites, generates
 # config/wrapper.yaml, creates dart-sdk Junction, runs smoke test.
 #
 # Usage:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
+#   powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Auto
+#   powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Auto -SkipSmoke
+#   powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Distro Ubuntu-22.04
 #
-# Run from the project root (where this file lives).
+# Options:
+#   -Auto       Non-interactive: fail instead of prompting for missing values.
+#   -SkipSmoke  Skip the smoke test at the end.
+#   -Distro <n> Override WSL distro selection.
 
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+# Parse command-line arguments
+$Auto = $false
+$SkipSmoke = $false
+$UserDistro = $null
+for ($i = 0; $i -lt $args.Count; $i++) {
+    switch ($args[$i]) {
+        '-Auto' { $Auto = $true }
+        '-SkipSmoke' { $SkipSmoke = $true }
+        '-Distro' { if ($i + 1 -lt $args.Count) { $UserDistro = $args[++$i] } }
+    }
+}
+if ($Auto) { Write-Host "[AUTO MODE] Non-interactive - will fail if auto-detection fails" -ForegroundColor Yellow }
 
 $rootDir = $PSScriptRoot
 $configPath = Join-Path $rootDir 'config\wrapper.yaml'
@@ -79,11 +98,8 @@ $distro = $distroList | Where-Object { $_ -eq 'Ubuntu-24.04' } | Select-Object -
 if (-not $distro) { $distro = $distroList[0] }
 
 # Allow override via -Distro parameter
-if ($args.Length -gt 0) {
-    $paramName = $args[0]
-    if ($paramName -eq '-Distro' -and $args.Length -gt 1) {
-        $distro = $args[1]
-    }
+if ($UserDistro) {
+    $distro = $UserDistro
 }
 
 # Verify chosen distro exists
@@ -131,8 +147,44 @@ if (-not $flutterExe) {
     }
 }
 
-# Method 3: ask user
+# Method 2b: FVM (Flutter Version Management) detection
 if (-not $flutterExe) {
+    Write-Host "    Checking FVM..."
+    $fvmFound = $false
+    # Check ~/fvm/default/bin/flutter (FVM global default)
+    $fvmDefault = '/home/' + (& wsl.exe -d $distro -- bash -lc 'whoami' 2>$null).Trim() + '/fvm/default/bin/flutter'
+    $fvmCheck = & wsl.exe -d $distro -- bash -c "test -f $fvmDefault && echo '-f' || echo ''" 2>$null
+    if ($fvmCheck -match '-f') {
+        $flutterExe = $fvmDefault
+        Write-OK "Flutter found via FVM (default): $flutterExe"
+        $fvmFound = $true
+    } else {
+        # Check ~/.fvm/versions/ for highest version
+        try {
+            $fvmVersions = & wsl.exe -d $distro -- bash -lc 'ls -1d ~/.fvm/versions/*/bin/flutter 2>/dev/null || true' 2>$null
+            if ($fvmVersions -and $fvmVersions.Trim()) {
+                $latest = ($fvmVersions | Sort-Object -Descending | Select-Object -First 1).Trim()
+                if (Test-ValidPath $latest) {
+                    $flutterExe = $latest
+                    Write-OK "Flutter found via FVM (versions): $flutterExe"
+                    $fvmFound = $true
+                }
+            }
+        } catch {}
+    }
+    if (-not $flutterExe) {
+        Write-Warn "FVM not detected"
+    }
+}
+
+# Method 3: ask user (interactive) or fail (auto mode)
+if (-not $flutterExe) {
+    if ($Auto) {
+        Write-Err "Auto-detection failed. Cannot proceed in -Auto mode."
+        Write-Host "    Run without -Auto to enter path manually, or ensure Flutter is installed in WSL."
+        Write-Host "    Detection tries: command -v flutter, vfox, FVM (~/fvm/), FVM (~/.fvm/versions/)"
+        exit 1
+    }
     Write-Host "    Could not auto-detect Flutter path in WSL."
     $userPath = Read-Host "    Enter absolute path to flutter executable in WSL (e.g. /home/user/flutter/bin/flutter)"
     if (-not (Test-ValidPath $userPath)) {
@@ -585,19 +637,23 @@ if ($LASTEXITCODE -eq 0) {
 # ============================================================
 Write-Step "Smoke test: flutter --version"
 
-$flutterBat = Join-Path $rootDir 'bin\flutter.bat'
-if (-not (Test-Path $flutterBat)) {
-    Write-Err "Missing $flutterBat (project structure incomplete)"
-    exit 1
-}
-
-$smoke = & cmd /c "$flutterBat --version 2>&1"
-if ($LASTEXITCODE -eq 0) {
-    $firstLine = ($smoke | Select-Object -First 1).Trim()
-    Write-OK "Smoke test PASS: $firstLine"
+if ($SkipSmoke) {
+    Write-Warn "Smoke test skipped (-SkipSmoke)"
 } else {
-    Write-Warn "Smoke test returned non-zero exit code ($LASTEXITCODE)"
-    Write-Host ($smoke -join "`n")
+    $flutterBat = Join-Path $rootDir 'bin\flutter.bat'
+    if (-not (Test-Path $flutterBat)) {
+        Write-Err "Missing $flutterBat (project structure incomplete)"
+        exit 1
+    }
+
+    $smoke = & cmd /c "$flutterBat --version 2>&1"
+    if ($LASTEXITCODE -eq 0) {
+        $firstLine = ($smoke | Select-Object -First 1).Trim()
+        Write-OK "Smoke test PASS: $firstLine"
+    } else {
+        Write-Warn "Smoke test returned non-zero exit code ($LASTEXITCODE)"
+        Write-Host ($smoke -join "`n")
+    }
 }
 
 # ============================================================
@@ -618,8 +674,15 @@ Write-Host "  Configuration:"
 Write-Host "    $configPath" -ForegroundColor White
 Write-Host ""
 Write-Host "  Logs:"
-Write-Host "    $rootDir\logs\wrapper.log" -ForegroundColor White
+Write-Host "    $rootDir\logs\flutter.log" -ForegroundColor White
+Write-Host "    $rootDir\logs\dart.log" -ForegroundColor White
+Write-Host "    $rootDir\logs\bridge.log (daemon)" -ForegroundColor White
 Write-Host ""
+if ($Auto) {
+    Write-Host "  Run diagnostics to verify installation:"
+    Write-Host "    flutter-wrapper doctor" -ForegroundColor Yellow
+    Write-Host ""
+}
 Write-Host "  Next steps:"
 Write-Host "    1. Open Android Studio"
 Write-Host "    2. Settings > Languages & Frameworks > Flutter > Flutter SDK Path"
@@ -653,3 +716,19 @@ Write-Host "  Note: Drive mapping is per-user and not persistent across reboots.
 Write-Host "        Re-run install.ps1 after reboot, or run:"
 Write-Host "          net use $mappedDrive $uncPrefix /persistent:yes"
 Write-Host ""
+
+# In auto mode, run diagnostics to verify installation
+if ($Auto) {
+    Write-Step "Running flutter-wrapper doctor (auto mode)"
+    $doctorPath = Join-Path $rootDir 'bin\doctor.ps1'
+    if (Test-Path $doctorPath) {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $doctorPath -quick
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn "Doctor reported $LASTEXITCODE issue(s). Run 'flutter-wrapper doctor' for details."
+        } else {
+            Write-OK "All doctor checks passed"
+        }
+    } else {
+        Write-Warn "doctor.ps1 not found (skipping auto-diagnostic)"
+    }
+}

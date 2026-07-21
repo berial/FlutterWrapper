@@ -207,6 +207,11 @@ if (-not (Get-Command 'wsl.exe' -ErrorAction SilentlyContinue)) {
         }
         if ($distros -contains $distro) {
             Write-Check "WSL distro ($distro)" 'PASS' "Running"
+            # Show other available distros (v2.3 multi-distro)
+            $otherDistros = $distros | Where-Object { $_ -ne $distro }
+            if ($otherDistros.Count -gt 0) {
+                Write-Check "  Other distros available" 'SKIP' "$($otherDistros -join ', ') — edit config to switch"
+            }
         } else {
             Write-Check "WSL distro ($distro)" 'FAIL' `
                 "Not installed. Available: $($distros -join ', ')" `
@@ -269,6 +274,24 @@ if (-not $distro -or -not $flutterExe) {
             Write-Check "Flutter version" 'PASS' "$fvLine"
         } catch {
             Write-Check "Flutter version" 'WARN' "Cannot determine"
+        }
+    }
+
+    # Check FVM detection (v2.3)
+    if (-not $quick) {
+        $fvmPaths = @()
+        try {
+            $fvmDefault = & wsl.exe -d $distro -e bash -lc "test -f ~/fvm/default/bin/flutter && echo ~/fvm/default" 2>$null
+            if ($fvmDefault.Trim()) { $fvmPaths += $($fvmDefault.Trim()) }
+            $fvmVersions = & wsl.exe -d $distro -e bash -lc 'ls -1d ~/.fvm/versions/*/bin/flutter 2>/dev/null | sed "s|/bin/flutter||" || true' 2>$null
+            if ($fvmVersions) {
+                foreach ($v in $fvmVersions) { if ($v.Trim()) { $fvmPaths += $v.Trim() } }
+            }
+        } catch {}
+        if ($fvmPaths.Count -gt 0) {
+            Write-Check "FVM (Flutter Version Mgmt)" 'PASS' "Detected: $($fvmPaths -join ', ')"
+        } else {
+            Write-Check "FVM (Flutter Version Mgmt)" 'SKIP' "Not found (ok if using vfox)"
         }
     }
 }
