@@ -1,5 +1,7 @@
 # FlutterWrapper
 
+[English](README.md) | [中文](README_zh-CN.md)
+
 > Windows Android Studio + WSL Flutter 兼容编排层 (Compatibility Orchestration Layer)
 > v3.0 — 让 Windows IDE 与 WSL Flutter 工具链无缝协作，并提供诊断、修复、版本管理对接能力。
 
